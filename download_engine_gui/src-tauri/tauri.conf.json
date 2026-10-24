@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Download Engine",
+  "productName": "NODO",
   "version": "0.1.0",
   "identifier": "com.rezek.download-engine-gui",
   "build": {
@@ -12,17 +12,41 @@
   "app": {
     "windows": [
       {
-        "title": "download_engine_gui",
-        "width": 1100,
-        "height": 700,
+        "label": "main",
+        "title": "NODO",
+        "width": 1280,
+        "height": 780,
         "minWidth": 820,
         "minHeight": 520,
         "decorations": false,
+        "transparent": true,
+        "dragDropEnabled": false
+      },
+      {
+        "label": "island",
+        "title": "NODO island",
+        "url": "index.html#island",
+        "width": 640,
+        "height": 340,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "visible": false,
+        "focus": false,
         "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
     }
   },
   "bundle": {

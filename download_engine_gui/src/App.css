@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "@fortawesome/fontawesome-free/css/all.min.css";
 
 /*
  * Tailwind v4 wires `dark:` to `prefers-color-scheme` by default, so every
@@ -9,64 +8,444 @@
  */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/*
+ * One neutral ramp plus one accent. Surfaces step up in lightness instead of
+ * adding borders and shadows: panel < surface < raised. Contrast of ink-2 and
+ * ink-3 against every surface is at least 4.5:1 in both themes.
+ */
+:root {
+  color-scheme: light;
+  --bg: #e9e9e9;
+  --panel: #ffffff;
+  --surface: #f4f4f4;
+  --raised: #ececec;
+  --line: rgba(0, 0, 0, 0.07);
+  --ink: #0a0a0a;
+  --ink-2: #525252;
+  --ink-3: #6b6b6b;
+  --accent: #2b7fff;
+  --accent-ink: #ffffff;
+  --accent-text: #155dfc;
+  --accent-soft: rgba(43, 127, 255, 0.12);
+  --ok: #22a352;
+  --ok-text: #167a42;
+  --warn: #d98200;
+  --danger: #ef4444;
+  --danger-text: #b91c1c;
+}
+
+/*
+ * Neutral greys, no blue cast. The window background is the darkest step;
+ * the panes float on it, and cards inside a pane step up once more.
+ */
+.dark {
+  color-scheme: dark;
+  --bg: #0a0a0a;
+  --panel: #171717;
+  --surface: #212121;
+  --raised: #2a2a2a;
+  --line: rgba(255, 255, 255, 0.07);
+  --ink: #fafafa;
+  --ink-2: #a3a3a3;
+  --ink-3: #8a8a8a;
+  --accent: #2b7fff;
+  --accent-ink: #ffffff;
+  --accent-text: #6aa6ff;
+  --accent-soft: rgba(43, 127, 255, 0.18);
+  --ok: #34c759;
+  --ok-text: #5fd38a;
+  --warn: #ff9f0a;
+  --danger: #ff5a52;
+  --danger-text: #ff8d86;
+}
+
+/*
+ * Glass: the window is transparent and Windows blurs the desktop behind it.
+ * The panes follow the opacity slider; cards and tiles become a faint wash on
+ * top of them, so they still read as raised at any setting.
+ */
+.dark.glass {
+  --bg: rgb(10 10 10 / calc(var(--glass, 0.7) * 0.6));
+  --panel: rgb(23 23 23 / var(--glass, 0.7));
+  --surface: rgb(255 255 255 / 0.05);
+  --raised: rgb(255 255 255 / 0.08);
+  --line: rgb(255 255 255 / 0.08);
+}
+
+:root:not(.dark).glass {
+  --bg: rgb(233 233 233 / calc(var(--glass, 0.7) * 0.6));
+  --panel: rgb(255 255 255 / var(--glass, 0.7));
+  --surface: rgb(0 0 0 / 0.04);
+  --raised: rgb(0 0 0 / 0.06);
+  --line: rgb(0 0 0 / 0.08);
+}
+html.glass,
+html.glass body {
+  background: transparent;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-text: var(--accent-text);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-ok-text: var(--ok-text);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-danger-text: var(--danger-text);
+}
+
+/*
+ * The modals and the inspector still use the original palette classes. Pointing
+ * those at the new ramp restyles them without rewriting each one.
+ */
 @theme {
+  /* macOS-style continuous rounding and soft, layered shadows. */
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1.25rem;
+  --shadow-xl: 0 0 0 0.5px rgb(0 0 0 / 0.12), 0 8px 24px rgb(0 0 0 / 0.14), 0 2px 6px rgb(0 0 0 / 0.08);
+  --shadow-2xl: 0 0 0 0.5px rgb(0 0 0 / 0.14), 0 24px 64px rgb(0 0 0 / 0.28), 0 4px 12px rgb(0 0 0 / 0.1);
+
   --color-brand-50: #eff6ff;
   --color-brand-100: #dbeafe;
-  --color-brand-400: #60a5fa;
+  --color-brand-400: #7db0ff;
   --color-brand-500: #3b82f6;
-  --color-brand-600: #2563eb;
-  --color-brand-700: #1d4ed8;
+  --color-brand-600: #1f6feb;
+  --color-brand-700: #1859c2;
   --color-brand-800: #1e40af;
   --color-brand-900: #1e3a8a;
 
-  --color-darkbg-900: #0f172a;
-  --color-darkbg-800: #1e293b;
-  --color-darkbg-700: #334155;
-  --color-darkbg-600: #475569;
+  --color-darkbg-900: #0c0d0f;
+  --color-darkbg-800: #1a1c20;
+  --color-darkbg-700: #24272c;
+  --color-darkbg-600: #3a3e45;
 }
 
+/*
+ * The document itself never scrolls or bounces: only the panes' own lists do,
+ * as in a native window. Without this, focusing something near an edge or a
+ * wheel over a non-scrolling area slides the whole layout out of the window.
+ */
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  /* clip, not just hidden: a hidden box can still be scrolled by focus or scrollIntoView. */
+  overflow: clip;
+  overscroll-behavior: none;
+}
+* {
+  overscroll-behavior: contain;
+}
+img,
+svg {
+  -webkit-user-drag: none;
+}
+
+/* A desktop app should look native: the platform UI font, not a webfont. */
 body {
-  font-family: "Inter", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.003em;
+  font-variant-numeric: tabular-nums;
   user-select: none;
+  background: var(--bg);
+  color: var(--ink);
 }
 
 .font-mono {
-  font-family: "JetBrains Mono", monospace;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+}
+
+/* The island window is transparent; only its own black shape may paint. */
+html.island,
+html.island body,
+html.island #root {
+  /* !important: no theme or glass rule may paint the island window's empty area. */
+  background: transparent !important;
+  overflow: hidden;
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.05);
-}
-.dark ::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.2);
-  border-radius: 3px;
-}
-.dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--line);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.3);
-}
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--ink-3);
+  background-clip: content-box;
 }
 
-@keyframes pulse-chunk {
-  0%,
-  100% {
-    opacity: 0.9;
-  }
-  50% {
-    opacity: 0.4;
+/* In the base layer so a component's own outline-none can switch it off. */
+@layer base {
+  :focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    outline-offset: 1px;
   }
 }
-.chunk-active {
-  animation: pulse-chunk 1.5s infinite ease-in-out;
+
+/* Only while bytes are actually moving, so the bar reads as live. */
+@keyframes sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+.bar-live::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  animation: sheen 1.8s linear infinite;
+}
+
+/* The island body fades in after the window has snapped to its new size. */
+@keyframes island-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.island-in {
+  animation: island-in 160ms ease-out;
+  transform-origin: top center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar-live::after,
+  .island-in {
+    animation: none;
+  }
+}
+
+/* Cards: a hairline edge and a faint top highlight, so they read as glass panes. */
+.card {
+  background: var(--surface);
+}
+
+/*
+ * Sheets (modals, the details drawer) follow the BoardUI recipe: a solid
+ * surface with a secondary tone for nav rails and grouped cards, and filled
+ * fields that show a ring on hover and focus instead of a border.
+ */
+:root {
+  --sheet: #ffffff;
+  --sheet-2: #f4f4f4;
+  --sheet-hover: #ececec;
+  --field: #ededed;
+  --field-ring: #d4d4d4;
+}
+.dark {
+  --sheet: #171717;
+  --sheet-2: #212121;
+  --sheet-hover: #2a2a2a;
+  --field: #262626;
+  --field-ring: #404040;
+}
+
+@theme inline {
+  --color-sheet: var(--sheet);
+  --color-sheet-2: var(--sheet-2);
+  --color-sheet-hover: var(--sheet-hover);
+  --color-field: var(--field);
+  --color-field-ring: var(--field-ring);
+}
+
+.modal {
+  background: var(--sheet);
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 1px 0 0 rgb(0 0 0 / 0.02),
+    0 24px 64px -12px rgb(0 0 0 / 0.4),
+    0 8px 20px -6px rgb(0 0 0 / 0.2);
+}
+
+/* In glass mode sheets turn to frosted glass too: see-through, but blurred enough to stay readable. */
+.glass .modal {
+  background: rgb(23 23 23 / 0.78);
+  backdrop-filter: blur(28px) saturate(1.5);
+}
+:root:not(.dark).glass .modal {
+  background: rgb(255 255 255 / 0.8);
+}
+
+/* The floating panes: sidebar, list, widgets, details. */
+.pane {
+  background: var(--panel);
+  border-radius: 24px;
+}
+/*
+ * Glass edge: a 1px gradient ring drawn with a masked pseudo-element, bright
+ * where light would catch the top-left corner and fading out across the pane,
+ * instead of a flat border. Cards inside a pane get a fainter version.
+ */
+.pane,
+.glass .card {
+  position: relative;
+}
+.glass .pane::before,
+.glass .card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: linear-gradient(155deg, var(--edge-hi) 0%, var(--edge-mid) 35%, var(--edge-lo) 65%, var(--edge-mid) 100%);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+.glass .card::before {
+  opacity: 0.6;
+}
+.glass .pane {
+  box-shadow: 0 10px 40px -12px rgb(0 0 0 / 0.35);
+}
+:root:not(.dark).glass {
+  --edge-hi: rgb(255 255 255 / 0.95);
+  --edge-mid: rgb(255 255 255 / 0.35);
+  --edge-lo: rgb(255 255 255 / 0.12);
+}
+.dark.glass {
+  --edge-hi: rgb(255 255 255 / 0.22);
+  --edge-mid: rgb(255 255 255 / 0.07);
+  --edge-lo: rgb(255 255 255 / 0.03);
+}
+:root:not(.dark).glass .pane {
+  box-shadow: 0 10px 40px -14px rgb(0 0 0 / 0.18);
+}
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+.sheet-in {
+  animation: sheet-in 280ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.backdrop-in {
+  animation: fade-in 240ms ease-out;
+}
+
+/* Primary button: the accent as a soft top-to-bottom gradient with an inner highlight. */
+.btn-primary {
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white) 0%, var(--accent) 100%);
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.22),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 80%, black),
+    0 1px 2px 0 rgb(0 0 0 / 0.18);
+}
+.btn-primary:hover:not(:disabled) {
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--accent) 75%, white) 0%, color-mix(in srgb, var(--accent) 92%, white) 100%);
+}
+
+/* Press feedback shared by every sheet button. */
+.press {
+  transition:
+    background-color 150ms ease,
+    box-shadow 150ms ease,
+    color 150ms ease,
+    transform 420ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.press:active:not(:disabled) {
+  transform: scale(0.97);
+  transition-duration: 150ms, 150ms, 150ms, 200ms;
+}
+
+/* nodo switch: a flat track, solid accent when on, and a plain white thumb. */
+.switch {
+  appearance: none;
+  position: relative;
+  width: 40px;
+  height: 24px;
+  flex-shrink: 0;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--field);
+  cursor: pointer;
+  transition: background-color 200ms ease;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25), 0 0 0 0.5px rgb(0 0 0 / 0.06);
+  transition: transform 220ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.switch:checked {
+  background: var(--accent);
+}
+.switch:checked::after {
+  transform: translateX(16px);
+}
+.switch:active::after {
+  width: 23px;
+}
+.switch:checked:active::after {
+  transform: translateX(13px);
+}
+.switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-in,
+  .backdrop-in {
+    animation: none;
+  }
+  .press:active:not(:disabled) {
+    transform: none;
+  }
 }

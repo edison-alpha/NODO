@@ -11,7 +11,8 @@ export function detectCategory(name: string): FileCategory {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
   if (["zip", "rar", "7z", "tar", "gz", "dat"].includes(ext)) return "compressed";
   if (["pdf", "doc", "docx", "txt"].includes(ext)) return "documents";
-  if (["mp4", "mkv", "avi", "mp3", "webm"].includes(ext)) return "video";
+  if (["mp4", "mkv", "avi", "webm", "mov"].includes(ext)) return "video";
+  if (["mp3", "wav", "flac", "m4a", "ogg", "aac"].includes(ext)) return "audio";
   if (["exe", "msi", "iso", "dmg", "deb"].includes(ext)) return "programs";
   return "other";
 }

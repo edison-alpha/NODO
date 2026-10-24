@@ -13,7 +13,10 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 mod bridge;
+mod media;
 mod persistence;
+#[cfg(windows)]
+mod shell_icon;
 
 #[derive(Clone, Serialize)]
 struct JobProgress {
@@ -58,7 +61,7 @@ struct EngineState {
     jobs: Mutex<HashMap<String, DownloadHandle>>,
     limiter: SharedRateLimiter,
     user_agent: Mutex<Option<String>>,
-    /// Set once the user picks "Keluar", so closing the window really exits
+    /// Set once the user picks "Quit", so closing the window really exits
     /// instead of hiding to the tray again.
     quitting: AtomicBool,
 }
@@ -290,12 +293,109 @@ fn set_user_agent(state: State<'_, EngineState>, user_agent: Option<String>) -> 
     Ok(())
 }
 
-/// Shuts the app down for real. The UI calls this from the tray's "Keluar"
+/// Shuts the app down for real. The UI calls this from the tray's "Quit"
 /// after it has flushed its state, since closing the window only hides it.
 #[tauri::command]
 fn quit_app(app: AppHandle, state: State<'_, EngineState>) {
     state.quitting.store(true, Ordering::SeqCst);
     app.exit(0);
+}
+
+#[derive(Serialize)]
+struct DiskSpace {
+    total: u64,
+    free: u64,
+}
+
+/// Free and total space of the drive holding `path`. The folder may not exist
+/// yet (a first run, a typo), so this walks up to the nearest ancestor that does.
+#[tauri::command]
+fn disk_space(path: String) -> Result<DiskSpace, String> {
+    let mut probe = PathBuf::from(path);
+    while !probe.exists() {
+        if !probe.pop() {
+            return Err("no existing parent folder".into());
+        }
+    }
+    let total = fs2::total_space(&probe).map_err(|e| e.to_string())?;
+    let free = fs2::available_space(&probe).map_err(|e| e.to_string())?;
+    Ok(DiskSpace { total, free })
+}
+
+/// Clips the island window to the notch shape, in physical pixels from the
+/// window's top-left: square at the top where it meets the screen edge, rounded
+/// at the bottom, plus a strip `ear` wide on each side for the flared corners.
+/// The window itself stays one fixed, transparent size so the shape can animate
+/// inside it; the clip is what keeps the empty part from catching the mouse.
+/// Called every animation frame.
+#[tauri::command]
+fn set_island_shape(window: tauri::WebviewWindow, x: i32, y: i32, width: i32, height: i32, radius: i32, ear: i32) {
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        use windows_sys::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, RGN_OR};
+        // SAFETY: `strip` is ours and freed here; `region` is handed to the
+        // system, which owns it from then on.
+        unsafe {
+            // Starting the rounded rect one radius above the window pushes its
+            // top corners off-screen, which leaves the top edge square.
+            let region = CreateRoundRectRgn(x, y - radius, x + width, y + height, radius * 2, radius * 2);
+            if ear > 0 {
+                let strip = CreateRectRgn(x - ear, y, x + width + ear, y + ear);
+                CombineRgn(region, region, strip, RGN_OR);
+                DeleteObject(strip);
+            }
+            SetWindowRgn(hwnd.0 as _, region, 1);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (window, x, y, width, height, radius, ear);
+}
+
+/// The icon Explorer shows for `path`: the file's own icon if it exists, the
+/// registered icon for its extension if not. Raw bytes, so a 256px icon is not
+/// shipped as a JSON number array: width and height as little-endian u32s,
+/// then straight RGBA rows.
+#[tauri::command]
+fn file_icon(path: String) -> Result<tauri::ipc::Response, String> {
+    file_icon_bytes(&path).map(tauri::ipc::Response::new).ok_or_else(|| "no icon".to_string())
+}
+
+#[cfg(windows)]
+fn file_icon_bytes(path: &str) -> Option<Vec<u8>> {
+    let p = shell_icon::file_icon(path)?;
+    let mut out = Vec::with_capacity(8 + p.rgba.len());
+    out.extend_from_slice(&p.width.to_le_bytes());
+    out.extend_from_slice(&p.height.to_le_bytes());
+    out.extend_from_slice(&p.rgba);
+    Some(out)
+}
+
+#[cfg(not(windows))]
+fn file_icon_bytes(_path: &str) -> Option<Vec<u8>> {
+    None
+}
+
+/// Extensions the webview can draw itself, so a finished download gets its
+/// real picture or first frame instead of an icon.
+const PREVIEWABLE: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "svg", "ico", "mp4", "webm", "mov", "m4v"];
+
+/// Opens one finished file to the asset protocol so the UI can preview it.
+/// The scope starts empty and grows only by files that exist and are media, so
+/// the webview cannot be pointed at arbitrary paths through this.
+#[tauri::command]
+fn allow_preview(app: AppHandle, path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
+    if !PREVIEWABLE.contains(&ext.as_str()) || !path.is_file() {
+        return Err("not a previewable file".into());
+    }
+    app.asset_protocol_scope().allow_file(&path).map_err(|e| e.to_string())
+}
+
+/// The island lives in its own window and has no way to raise the main one.
+#[tauri::command]
+fn show_main_window(app: AppHandle) {
+    reveal_main_window(&app);
 }
 
 /// Brings the main window back from the tray. Also un-minimises it, since a
@@ -312,10 +412,10 @@ fn reveal_main_window(app: &AppHandle) {
 /// Builds the tray icon. Menu entries that depend on job state are forwarded to
 /// the UI as events, because the job list lives there and not in `EngineState`.
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Tampilkan Jendela", true, None::<&str>)?;
-    let start_all = MenuItem::with_id(app, "start-all", "Mulai Semua", true, None::<&str>)?;
-    let pause_all = MenuItem::with_id(app, "pause-all", "Jeda Semua", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Keluar", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
+    let start_all = MenuItem::with_id(app, "start-all", "Start All", true, None::<&str>)?;
+    let pause_all = MenuItem::with_id(app, "pause-all", "Pause All", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
         &[
@@ -329,7 +429,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     )?;
 
     let mut builder = TrayIconBuilder::with_id("main")
-        .tooltip("Download Engine")
+        .tooltip("NODO")
         .menu(&menu)
         // Left click belongs to show/hide; the menu stays on right click.
         .show_menu_on_left_click(false)
@@ -376,18 +476,23 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // The island is re-docked to the top centre of the screen every time it
+        // appears, so restoring a saved position would only fight that.
+        .plugin(tauri_plugin_window_state::Builder::default().with_denylist(&["island"]).build())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             app.manage(EngineState::default());
             // The listener itself stays down until the UI restores its setting
             // and asks for it; this only makes the state available.
             app.manage(bridge::BridgeState::default());
+            app.manage(media::MediaState::default());
+            // Keeps yt-dlp current, since sites like YouTube break old copies.
+            media::update_in_background(app.handle());
             setup_tray(app.handle())?;
             Ok(())
         })
         // Closing the window parks the app in the tray so downloads keep
-        // running; only the tray's "Keluar" actually exits.
+        // running; only the tray's "Quit" actually exits.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
@@ -409,6 +514,17 @@ pub fn run() {
             set_global_speed_limit,
             set_user_agent,
             quit_app,
+            disk_space,
+            show_main_window,
+            set_island_shape,
+            file_icon,
+            allow_preview,
+            media::media_tools_status,
+            media::install_media_tools,
+            media::media_probe,
+            media::media_download,
+            media::media_pause,
+            media::media_cancel,
             bridge::bridge_info,
             bridge::set_bridge_enabled,
             persistence::load_app_state,

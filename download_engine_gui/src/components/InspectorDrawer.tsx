@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Job, SegmentProgress } from "../types";
-import { formatBytes, progressPercent } from "../lib/format";
+import Icon from "./Icon";
+import { ICON_BTN } from "./controls";
+import { baseName, formatBytes, progressPercent } from "../lib/format";
+import { extOf } from "../lib/fileIcon";
+import { hostOf } from "../lib/ui";
+import FileThumb from "./FileThumb";
 import { copyToClipboard, revealInFolder } from "../lib/jobActions";
 
 interface Props {
@@ -10,6 +15,22 @@ interface Props {
 }
 
 const LIVE_STATUSES = ["downloading", "paused"];
+
+const STATUS_LABEL: Record<Job["status"], string> = {
+  queued: "Queued",
+  downloading: "Downloading",
+  paused: "Paused",
+  completed: "Completed",
+  cancelled: "Cancelled",
+  error: "Failed",
+  interrupted: "Interrupted",
+};
+
+/** The folder a path sits in, without the file name. */
+function folderOf(path: string): string {
+  const i = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
+  return i > 0 ? path.slice(0, i) : path;
+}
 
 export default function InspectorDrawer({ job, onClose }: Props) {
   const pct = progressPercent(job);
@@ -65,62 +86,76 @@ export default function InspectorDrawer({ job, onClose }: Props) {
     setFeedback(null);
   }, [job.id]);
 
+  const actionBtn =
+    "flex flex-col items-center gap-1.5 press rounded-xl bg-surface py-3 text-[11px] font-medium text-ink-2 transition-colors hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-ink-2";
+
   return (
-    <div className="w-80 bg-gray-50 dark:bg-darkbg-800 border-l border-gray-200 dark:border-gray-700/80 flex flex-col justify-between shadow-xl">
-      <div className="p-4 overflow-y-auto space-y-4">
-        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 pb-3">
-          <h3 className="font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
-            <i className="fa-solid fa-microchip text-brand-500" /> Segment Inspector
+    <div className="pane sheet-in flex w-80 shrink-0 flex-col overflow-hidden">
+      <div className="flex-1 space-y-4 overflow-y-auto p-5 pt-14">
+        <div className="flex items-center justify-between">
+          <h3 className="flex items-center gap-2 text-[13px] font-semibold text-ink">
+            <Icon name="chip" className="text-accent-text" /> Details
           </h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-white">
-            <i className="fa-solid fa-xmark" />
+          <button onClick={onClose} className={ICON_BTN} aria-label="Close details">
+            <Icon name="close" className="text-sm" />
           </button>
         </div>
 
-        <div>
-          <div className="font-semibold text-gray-900 dark:text-gray-100 truncate text-sm">{job.name}</div>
-          <div className="text-[11px] text-gray-400 truncate font-mono mt-0.5">{job.url}</div>
+        <div className="flex flex-col items-center pt-1 text-center">
+          <FileThumb name={job.name} path={job.outputPath} done={job.status === "completed"} category={job.category} size={88} />
+          <div className="mt-3 line-clamp-2 break-words text-sm font-semibold text-ink">{job.name}</div>
+          <div className="mt-0.5 text-xs text-ink-3">
+            {(extOf(job.name) || "file").toUpperCase()} · {job.sizeBytes > 0 ? formatBytes(job.sizeBytes) : "Unknown size"}
+          </div>
         </div>
 
-        <div className="space-y-1.5">
-          <div className="grid grid-cols-3 gap-1.5">
+        <dl className="divide-y divide-line rounded-2xl bg-surface px-3.5 text-xs">
+          {[
+            ["Status", job.sizeBytes > 0 && job.status !== "completed" ? `${STATUS_LABEL[job.status]} · ${pct}%` : STATUS_LABEL[job.status]],
+            ["Downloaded", job.sizeBytes > 0 ? `${formatBytes(job.downloadedBytes)} of ${formatBytes(job.sizeBytes)}` : formatBytes(job.downloadedBytes)],
+            ["Source", hostOf(job.url)],
+            ["Added", new Date(job.createdAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })],
+            ["Folder", job.outputPath ? baseName(folderOf(job.outputPath)) : "App folder"],
+            job.kind === "media" ? ["Quality", job.media?.label ?? "Best"] : ["Connections", String(job.segments)],
+          ].map(([k, v]) => (
+            <div key={k} className="flex items-center justify-between gap-3 py-2.5">
+              <dt className="shrink-0 text-ink-3">{k}</dt>
+              <dd className="min-w-0 truncate text-right text-ink" title={v}>
+                {v}
+              </dd>
+            </div>
+          ))}
+        </dl>
+
+        <div className="space-y-2">
+          <div className="grid grid-cols-3 gap-2">
             <button
-              onClick={() => runAction("Folder dibuka", () => revealInFolder(job.outputPath))}
+              onClick={() => runAction("Folder opened", () => revealInFolder(job.outputPath))}
               disabled={!fileExists}
-              title={fileExists ? "Tampilkan file di File Explorer" : "Belum ada file di disk untuk ditampilkan"}
-              className="flex flex-col items-center gap-1 py-2 rounded-lg border border-gray-200 dark:border-gray-700/60 bg-white dark:bg-darkbg-900 text-[10px] font-medium text-gray-600 dark:text-gray-300 transition hover:border-brand-500/40 hover:text-brand-600 dark:hover:text-brand-400 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-gray-200 dark:disabled:hover:border-gray-700/60 disabled:hover:text-gray-600"
+              title={fileExists ? "Show file in File Explorer" : "No file on disk to show yet"}
+              className={actionBtn}
             >
-              <i className="fa-regular fa-folder-open text-sm" />
-              <span>Buka Folder</span>
+              <Icon name="folder" className="text-lg" />
+              <span>Open folder</span>
+            </button>
+            <button onClick={() => runAction("Link copied", () => copyToClipboard(job.url))} title="Copy download URL to clipboard" className={actionBtn}>
+              <Icon name="link" className="text-lg" />
+              <span>Copy link</span>
             </button>
             <button
-              onClick={() => runAction("Link dicopy", () => copyToClipboard(job.url))}
-              title="Copy URL download ke clipboard"
-              className="flex flex-col items-center gap-1 py-2 rounded-lg border border-gray-200 dark:border-gray-700/60 bg-white dark:bg-darkbg-900 text-[10px] font-medium text-gray-600 dark:text-gray-300 transition hover:border-brand-500/40 hover:text-brand-600 dark:hover:text-brand-400"
-            >
-              <i className="fa-solid fa-link text-sm" />
-              <span>Copy Link</span>
-            </button>
-            <button
-              onClick={() => runAction("Path dicopy", () => copyToClipboard(job.outputPath))}
+              onClick={() => runAction("Path copied", () => copyToClipboard(job.outputPath))}
               disabled={!job.outputPath}
-              title={job.outputPath ? "Copy path file output ke clipboard" : "Job ini tidak punya path output eksplisit"}
-              className="flex flex-col items-center gap-1 py-2 rounded-lg border border-gray-200 dark:border-gray-700/60 bg-white dark:bg-darkbg-900 text-[10px] font-medium text-gray-600 dark:text-gray-300 transition hover:border-brand-500/40 hover:text-brand-600 dark:hover:text-brand-400 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-gray-200 dark:disabled:hover:border-gray-700/60 disabled:hover:text-gray-600"
+              title={job.outputPath ? "Copy output file path to clipboard" : "This download has no explicit output path"}
+              className={actionBtn}
             >
-              <i className="fa-regular fa-clipboard text-sm" />
-              <span>Copy Path</span>
+              <Icon name="clipboard" className="text-lg" />
+              <span>Copy path</span>
             </button>
           </div>
 
           {feedback && (
-            <div
-              className={`flex items-start gap-1.5 rounded-lg px-2 py-1.5 text-[10px] border break-all ${
-                feedback.ok
-                  ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                  : "bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400"
-              }`}
-            >
-              <i className={`mt-0.5 ${feedback.ok ? "fa-solid fa-circle-check" : "fa-solid fa-circle-exclamation"}`} />
+            <div className={`flex items-start gap-1.5 break-all rounded-xl px-3 py-2 text-[11px] ${feedback.ok ? "bg-[color-mix(in_srgb,var(--ok)_12%,transparent)] text-ok-text" : "bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] text-danger-text"}`}>
+              <Icon name={feedback.ok ? "checkCircle" : "alertCircle"} className="mt-0.5" />
               <span>{feedback.message}</span>
             </div>
           )}
@@ -128,55 +163,53 @@ export default function InspectorDrawer({ job, onClose }: Props) {
 
         {/* A failed job never got a usable answer about range support, so
             `supportsRange === false` here means "unknown", not "unsupported".
-            Showing the amber "Range Tidak Didukung" panel beside the real error
+            Showing the amber "Range Not Supported" panel beside the real error
             invents a server capability we never observed and sends the reader
             after the wrong cause. The error below says what actually happened. */}
-        {job.error ? null : job.supportsRange === null ? (
-          <div className="bg-gray-500/10 border border-gray-500/20 rounded-lg p-2.5 flex items-start space-x-2">
-            <i className="fa-solid fa-circle-notch fa-spin text-gray-400 mt-0.5 text-xs" />
-            <div className="text-xs text-gray-500 dark:text-gray-400">Probing server...</div>
+        {job.error || job.kind === "media" ? null : job.supportsRange === null ? (
+          <div className="flex items-start gap-2 rounded-xl bg-surface p-3">
+            <Icon name="spinner" className="mt-0.5 animate-spin text-xs text-ink-3" />
+            <div className="text-xs text-ink-2">Probing server...</div>
           </div>
         ) : job.supportsRange ? (
-          <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-2.5 flex items-start space-x-2">
-            <i className="fa-solid fa-circle-check text-emerald-500 mt-0.5 text-xs" />
+          <div className="flex items-start gap-2 rounded-xl bg-[color-mix(in_srgb,var(--ok)_10%,transparent)] p-3">
+            <Icon name="checkCircle" className="mt-0.5 text-xs text-ok-text" />
             <div className="text-xs">
-              <div className="font-semibold text-emerald-600 dark:text-emerald-400">Accept-Ranges Supported</div>
-              <div className="text-[11px] text-gray-500 dark:text-gray-400">Server mendukung HTTP byte-range, download dipecah jadi {job.segments} segmen paralel.</div>
+              <div className="font-semibold text-ok-text">Accept-Ranges supported</div>
+              <div className="mt-0.5 text-[11px] text-ink-2">The server supports HTTP byte ranges, so the download is split into {job.segments} parallel segments.</div>
             </div>
           </div>
         ) : (
-          <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5 flex items-start space-x-2">
-            <i className="fa-solid fa-triangle-exclamation text-amber-500 mt-0.5 text-xs" />
+          <div className="flex items-start gap-2 rounded-xl bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] p-3">
+            <Icon name="warning" className="mt-0.5 text-xs text-warn" />
             <div className="text-xs">
-              <div className="font-semibold text-amber-600 dark:text-amber-400">Range Tidak Didukung</div>
-              <div className="text-[11px] text-gray-500 dark:text-gray-400">Server tidak mendukung byte-range, fallback ke satu koneksi streaming biasa.</div>
+              <div className="font-semibold text-warn">Range not supported</div>
+              <div className="mt-0.5 text-[11px] text-ink-2">The server does not support byte ranges; falling back to a single streaming connection.</div>
             </div>
           </div>
         )}
 
+        {job.kind !== "media" && (
         <div>
-          <div className="flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">
-            <span>Parallel Connections (-n)</span>
-            <span className="font-mono">{segments.length || job.segments} Threads</span>
+          <div className="mb-2 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+            <span>Connections</span>
+            <span className="font-mono normal-case tracking-normal">{segments.length || job.segments} threads</span>
           </div>
 
           {segments.length > 0 ? (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               {segments.map((segment) => {
                 const segmentPct = segment.total > 0 ? Math.min(100, Math.round((segment.downloaded / segment.total) * 100)) : 0;
                 return (
-                  <div key={segment.index} className="bg-white dark:bg-darkbg-900 p-2 rounded-lg border border-gray-200 dark:border-gray-700/60 space-y-1">
-                    <div className="flex justify-between items-center text-[10px] font-mono">
-                      <span className="text-gray-500 font-semibold">Thread #{segment.index + 1}</span>
-                      <span className="text-brand-600 dark:text-brand-400">{segmentPct}%</span>
+                  <div key={segment.index} className="space-y-1.5 rounded-xl bg-surface p-2.5">
+                    <div className="flex items-center justify-between font-mono text-[10px]">
+                      <span className="font-semibold text-ink-2">#{segment.index + 1}</span>
+                      <span className="text-accent-text">{segmentPct}%</span>
                     </div>
-                    <div className="w-full bg-gray-200 dark:bg-gray-700 h-1.5 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full transition-all duration-300 ${job.status === "paused" ? "bg-amber-400" : "bg-brand-500"}`}
-                        style={{ width: `${segmentPct}%` }}
-                      />
+                    <div className="h-1 w-full overflow-hidden rounded-full bg-field">
+                      <div className="h-full rounded-full transition-all duration-300" style={{ width: `${segmentPct}%`, background: job.status === "paused" ? "var(--warn)" : "var(--accent)" }} />
                     </div>
-                    <div className="text-[9px] text-gray-400 font-mono">
+                    <div className="font-mono text-[10px] text-ink-3">
                       {formatBytes(segment.downloaded)} / {formatBytes(segment.total)}
                     </div>
                   </div>
@@ -184,33 +217,20 @@ export default function InspectorDrawer({ job, onClose }: Props) {
               })}
             </div>
           ) : (
-            <div className="bg-white dark:bg-darkbg-900 p-2.5 rounded-lg border border-gray-200 dark:border-gray-700/60 text-[11px] text-gray-400">
-              {LIVE_STATUSES.includes(job.status) ? "Menunggu segmen mulai..." : "Breakdown per-segmen hanya tersedia saat download berjalan."}
+            <div className="rounded-xl bg-surface p-3 text-[11px] text-ink-3">
+              {LIVE_STATUSES.includes(job.status) ? "Waiting for segments to start..." : "Per-segment breakdown is only available while downloading."}
             </div>
           )}
         </div>
-
-        <div className="bg-white dark:bg-darkbg-900 p-2.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs space-y-1">
-          <div className="text-gray-400 font-medium">Output Path (-o):</div>
-          <div className="font-mono text-[11px] text-gray-700 dark:text-gray-300 break-all bg-gray-100 dark:bg-darkbg-800 p-1.5 rounded">{job.outputPath || "(current working directory)"}</div>
-        </div>
-
-        {job.sizeBytes > 0 && (
-          <div className="bg-white dark:bg-darkbg-900 p-2.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs space-y-1">
-            <div className="text-gray-400 font-medium">Total Progress:</div>
-            <div className="font-mono text-[11px] text-gray-700 dark:text-gray-300">
-              {formatBytes(job.downloadedBytes)} / {formatBytes(job.sizeBytes)} ({pct}%)
-            </div>
-          </div>
         )}
 
-        {job.error && <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5 text-xs text-red-600 dark:text-red-400 break-all">{job.error}</div>}
-      </div>
+        <div className="space-y-1.5 rounded-xl bg-surface p-3 text-xs">
+          <div className="font-medium text-ink-3">Output path</div>
+          <div className="break-all font-mono text-[11px] text-ink-2">{job.outputPath || "(current working directory)"}</div>
+        </div>
 
-      <div className="p-3 bg-gray-100 dark:bg-darkbg-900 border-t border-gray-200 dark:border-gray-700/80 text-xs">
-        <button onClick={onClose} className="w-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 py-1.5 rounded-md transition font-medium">
-          Close Inspector
-        </button>
+
+        {job.error && <div className="break-all rounded-xl bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] p-3 text-xs text-danger-text">{job.error}</div>}
       </div>
     </div>
   );

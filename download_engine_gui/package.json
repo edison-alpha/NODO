@@ -10,16 +10,19 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^7.3.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-clipboard-manager": "^2.5.0",
     "@tauri-apps/plugin-dialog": "^2.8.3",
     "@tauri-apps/plugin-notification": "^2.7.0",
     "@tauri-apps/plugin-opener": "^2",
+    "motion": "^14.6.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@iconify-json/f7": "^1.2.2",
+    "@iconify-json/fluent": "^1.2.60",
+    "@iconify-json/heroicons": "^1.2.3",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",

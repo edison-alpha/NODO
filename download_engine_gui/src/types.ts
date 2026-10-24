@@ -8,7 +8,7 @@ export type JobStatus =
   /** Was running when the app last closed, so it has no engine handle anymore. */
   | "interrupted";
 
-export type FileCategory = "compressed" | "documents" | "video" | "programs" | "other";
+export type FileCategory = "compressed" | "documents" | "video" | "audio" | "programs" | "other";
 
 export interface Job {
   id: string;
@@ -32,6 +32,21 @@ export interface Job {
    * typed into the form.
    */
   nameFromUser: boolean;
+  /** "media" jobs are video pages saved through yt-dlp; absent means a plain file. */
+  kind?: "file" | "media";
+  media?: MediaSpec;
+  /** A passing note from yt-dlp ("Merging video and audio…"), cleared when the job moves on. */
+  statusText?: string;
+}
+
+/** What a media job needs to run again: which quality, and where it lands. */
+export interface MediaSpec {
+  /** `best`, `v1080`, `m4a` or `mp3`, as the extension offered it. */
+  choice: string;
+  /** The quality as shown, e.g. "1080p" or "Audio only · MP3". */
+  label: string;
+  /** Folder yt-dlp writes into; the file name comes from the video title. */
+  dir: string;
 }
 
 export interface NewJobInput {
@@ -60,7 +75,71 @@ export interface AppSettings {
   clipboardMonitor: boolean;
   /** Listen for links from the browser extension. Off by default: it opens a port. */
   browserBridge: boolean;
+  /** Floating island at the top of the screen while downloads run. */
+  islandEnabled: boolean;
+  /** Speed, storage and queue widgets beside the list. */
+  showWidgets: boolean;
+  /** Translucent window with the desktop blurred behind it. */
+  glassEnabled: boolean;
+  /** How opaque the panels are on top of the blur, 0.4 to 1. Lower than 0.4 fails text contrast. */
+  glassOpacity: number;
+  glassEffect: GlassEffect;
+  /**
+   * Bumped when a default changes in a way saved settings should pick up.
+   * 2: concurrency default went from 1 to 3.
+   */
+  settingsVersion?: number;
+  /** Which Overview cards show, in order. Missing means the default set. */
+  overview?: OverviewItem[];
 }
+
+export type OverviewWidget = "queue" | "speed" | "storage" | "recent";
+
+export interface OverviewItem {
+  id: OverviewWidget;
+  visible: boolean;
+}
+
+/** "system" follows the Windows light/dark setting, and keeps following it while the app runs. */
+export type ThemeMode = "light" | "dark" | "system";
+
+/** Which Windows backdrop sits behind the window. Mica needs Windows 11. */
+export type GlassEffect = "acrylic" | "mica";
+
+/** One download as the island sees it: only what it draws, nothing credential-bearing. */
+export interface IslandJob {
+  id: string;
+  name: string;
+  category: FileCategory;
+  status: JobStatus;
+  pct: number;
+  speed: number;
+  downloaded: number;
+  size: number;
+}
+
+/** Snapshot the main window pushes to the island window. */
+export interface IslandState {
+  enabled: boolean;
+  /** Downloading or paused jobs. */
+  jobs: IslandJob[];
+  queued: number;
+  totalSpeed: number;
+}
+
+/** A job that just ended, so the island can say so before it hides again. */
+export interface IslandFlash {
+  kind: "done" | "failed";
+  name: string;
+}
+
+export type IslandAction =
+  | { type: "pause" | "resume"; id: string }
+  | { type: "pauseAll" | "resumeAll" | "paste" | "openMain" };
+
+export const ISLAND_STATE_EVENT = "island-state";
+export const ISLAND_FLASH_EVENT = "island-flash";
+export const ISLAND_ACTION_EVENT = "island-action";
 
 /** Where the browser extension should connect, and the token it must present. */
 export interface BridgeInfo {
@@ -102,6 +181,13 @@ export interface ResumeInfo {
 }
 
 export type JobResult = { status: "completed"; path: string } | { status: "cancelled" };
+
+export type MediaResult = { status: "completed"; path: string } | { status: "paused" } | { status: "cancelled" };
+
+export interface MediaToolsStatus {
+  ytdlp: boolean;
+  ffmpeg: boolean;
+}
 
 /**
  * The clipboard has no change event, so it has to be polled. Shared with the

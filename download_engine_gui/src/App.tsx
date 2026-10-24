@@ -1,21 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { emit, listen } from "@tauri-apps/api/event";
+import { Effect, getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
-import { CLIPBOARD_POLL_MS, SPEED_LIMIT_OPTIONS } from "./types";
-import type { AppSettings, FileCategory, Job, JobHeaders, JobResult, JobStatus, NewJobInput, ProbeResult, ResumeInfo } from "./types";
+import { CLIPBOARD_POLL_MS, ISLAND_ACTION_EVENT, ISLAND_FLASH_EVENT, ISLAND_STATE_EVENT, SPEED_LIMIT_OPTIONS } from "./types";
+import type { AppSettings, FileCategory, IslandAction, IslandFlash, IslandState, Job, JobHeaders, JobResult, JobStatus, MediaResult, MediaToolsStatus, NewJobInput, ProbeResult, ResumeInfo, ThemeMode } from "./types";
 import { baseName, calculateEta, detectCategory, formatBytes, joinPath, nameFromUrl, progressPercent, uniqueOutputPath } from "./lib/format";
 import { loadState, saveState } from "./lib/persistence";
 import { notifyDownloadComplete, notifyDownloadFailed } from "./lib/notifications";
-import { readClipboardText } from "./lib/jobActions";
+import { copyToClipboard, readClipboardText, revealInFolder } from "./lib/jobActions";
 import { setBridgeEnabled } from "./lib/bridge";
 import { defaultDownloadDir } from "./lib/paths";
 import { dragHasText, extractUrls, findByUrl, isHttpUrl } from "./lib/urls";
+import { barColor, categoryIcon, formatSpeed, hostOf } from "./lib/ui";
 import NewDownloadModal from "./components/NewDownloadModal";
 import SettingsModal from "./components/SettingsModal";
 import InspectorDrawer from "./components/InspectorDrawer";
+import FileThumb from "./components/FileThumb";
+import MediaToolsDialog from "./components/MediaToolsDialog";
+import ShortcutsDialog from "./components/ShortcutsDialog";
+import ReportIssueDialog from "./components/ReportIssueDialog";
+import type { SettingsPage } from "./components/SettingsModal";
+import Select from "./components/Select";
+import SearchBox from "./components/SearchBox";
+import { ContextMenu } from "./components/Menu";
+import type { MenuItem } from "./components/Menu";
+import { PRIMARY_BTN, SECONDARY_BTN } from "./components/controls";
+import { Switch } from "./components/Sheet";
+import Widgets, { normalizeOverview, SPEED_HISTORY_LEN } from "./components/Widgets";
+import Icon from "./components/Icon";
+import type { IconName } from "./lib/icon-data";
 
 const appWindow = getCurrentWindow();
 
@@ -23,30 +38,38 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultSegments: 8,
   defaultLimit: "",
   defaultOutputDir: "",
-  concurrency: 1,
+  concurrency: 3,
   maxRetries: 5,
   userAgent: "",
   clipboardMonitor: false,
   browserBridge: false,
+  islandEnabled: true,
+  showWidgets: true,
+  glassEnabled: true,
+  glassOpacity: 0.7,
+  glassEffect: "acrylic",
+  settingsVersion: 2,
 };
 
-const STATUS_FILTERS: { key: "all" | JobStatus; label: string; icon: string }[] = [
-  { key: "all", label: "All Downloads", icon: "fa-solid fa-list-ul" },
-  { key: "downloading", label: "Downloading", icon: "fa-solid fa-arrow-down-long text-emerald-500" },
-  { key: "queued", label: "Queued", icon: "fa-solid fa-clock text-amber-500" },
-  { key: "paused", label: "Paused", icon: "fa-solid fa-pause text-blue-400" },
-  { key: "interrupted", label: "Interrupted", icon: "fa-solid fa-plug-circle-xmark text-orange-500" },
-  { key: "completed", label: "Completed", icon: "fa-solid fa-circle-check text-green-500" },
-  { key: "cancelled", label: "Cancelled", icon: "fa-solid fa-ban text-gray-400" },
-  { key: "error", label: "Failed", icon: "fa-solid fa-circle-exclamation text-red-500" },
+/** Interrupted and cancelled only get a row when something is actually in them. */
+const STATUS_FILTERS: { key: "all" | JobStatus; label: string; icon: IconName; hideWhenEmpty?: boolean }[] = [
+  { key: "all", label: "Downloads", icon: "download" },
+  { key: "downloading", label: "Downloading", icon: "downloading" },
+  { key: "queued", label: "Queue", icon: "queue" },
+  { key: "paused", label: "Paused", icon: "pause" },
+  { key: "completed", label: "Completed", icon: "completed" },
+  { key: "error", label: "Failed", icon: "failed" },
+  { key: "interrupted", label: "Interrupted", icon: "interrupted", hideWhenEmpty: true },
+  { key: "cancelled", label: "Cancelled", icon: "cancelled", hideWhenEmpty: true },
 ];
 
-const CATEGORY_FILTERS: { key: "all" | FileCategory; label: string; icon: string }[] = [
-  { key: "all", label: "All Types", icon: "fa-solid fa-folder" },
-  { key: "compressed", label: "Compressed (.zip, .rar)", icon: "fa-solid fa-file-zipper text-amber-500" },
-  { key: "documents", label: "Documents", icon: "fa-solid fa-file-pdf text-red-500" },
-  { key: "video", label: "Videos & Media", icon: "fa-solid fa-film text-purple-500" },
-  { key: "programs", label: "Executables / Apps", icon: "fa-solid fa-box text-blue-500" },
+const CATEGORY_FILTERS: { key: FileCategory; label: string }[] = [
+  { key: "video", label: "Video" },
+  { key: "audio", label: "Audio" },
+  { key: "documents", label: "Documents" },
+  { key: "compressed", label: "Archives" },
+  { key: "programs", label: "Apps" },
+  { key: "other", label: "Other" },
 ];
 
 const ACTIVE_STATUSES: JobStatus[] = ["downloading", "paused"];
@@ -58,96 +81,58 @@ const RETRYABLE_STATUSES: JobStatus[] = ["error", "cancelled", "completed", "int
 const SAVE_INTERVAL_MS = 3000;
 /** Quiet period after the last change before saving, when nothing is running. */
 const SAVE_DEBOUNCE_MS = 600;
+/** How often the island is sent a fresh snapshot while it is enabled. */
+const ISLAND_PUSH_MS = 500;
 
-function fileIcon(category: FileCategory): string {
-  switch (category) {
-    case "compressed":
-      return "fa-solid fa-file-zipper text-amber-500";
-    case "documents":
-      return "fa-solid fa-file-pdf text-red-500";
-    case "video":
-      return "fa-solid fa-file-video text-purple-500";
-    case "programs":
-      return "fa-solid fa-box text-blue-500";
-    default:
-      return "fa-solid fa-file text-gray-400";
+const WIN_BTN = "grid h-8 w-8 place-items-center rounded-full text-ink-3 transition-colors hover:bg-raised hover:text-ink";
+type ViewMode = "list" | "grid";
+const VIEW_KEY = "download-view";
+
+function readView(): ViewMode {
+  try {
+    return localStorage.getItem(VIEW_KEY) === "grid" ? "grid" : "list";
+  } catch {
+    return "list";
   }
 }
 
-function progressBarClass(status: JobStatus): string {
-  switch (status) {
-    case "error":
-      return "bg-red-500";
-    case "completed":
-      return "bg-emerald-500";
-    case "paused":
-      return "bg-amber-400";
-    case "interrupted":
-      return "bg-orange-400";
-    case "cancelled":
-      return "bg-gray-400";
-    default:
-      return "bg-brand-500";
-  }
-}
-
-function statusBadge(job: Job) {
-  const badge = "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium border";
+const TOP_PILL ="press grid h-10 flex-1 place-items-center rounded-full bg-raised text-ink-2 transition-colors hover:text-ink";
+const NAV_ITEM = "flex h-10 w-full items-center gap-3 rounded-2xl px-3 text-left text-[13px] transition-colors";
+const NAV_ACTIVE = "bg-raised font-medium text-ink";
+const NAV_IDLE = "text-ink-2 hover:bg-raised/60 hover:text-ink";
+const PILL_BTN = "press inline-flex h-7 items-center gap-1 whitespace-nowrap rounded-full px-2.5 text-xs font-medium text-ink-2 transition-colors hover:bg-sheet-hover hover:text-ink";
+/** One line under the progress bar, saying what the job is doing right now. */
+function metaLine(job: Job): { text: string; tone: "plain" | "ok" | "danger" | "warn" } {
+  const done = formatBytes(job.downloadedBytes);
+  const total = job.sizeBytes > 0 ? formatBytes(job.sizeBytes) : "unknown size";
   switch (job.status) {
-    case "downloading":
-      return (
-        <span className={`${badge} bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20`}>
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          Downloading
-        </span>
-      );
+    case "downloading": {
+      if (job.statusText) return { text: job.statusText, tone: "plain" };
+      const eta = calculateEta(job);
+      const speed = job.speedBytes > 0 ? ` · ${formatSpeed(job.speedBytes)}` : " · connecting";
+      return { text: `${done} of ${total}${speed}${eta !== "-" ? ` · ${eta} left` : ""}`, tone: "plain" };
+    }
     case "paused":
-      return (
-        <span className={`${badge} bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20`}>
-          <i className="fa-solid fa-pause text-[9px]" />
-          Paused
-        </span>
-      );
+      return { text: `Paused · ${done} of ${total}`, tone: "warn" };
     case "queued":
-      return (
-        <span className={`${badge} bg-gray-500/10 text-gray-600 dark:text-gray-400 border-gray-500/20`}>
-          <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
-          Queued
-        </span>
-      );
+      return { text: "Waiting for a free slot", tone: "plain" };
     case "completed":
-      return (
-        <span className={`${badge} bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20`}>
-          <i className="fa-solid fa-check text-[9px]" />
-          Completed
-        </span>
-      );
+      return { text: `Completed · ${total}`, tone: "ok" };
     case "cancelled":
-      return (
-        <span className={`${badge} bg-gray-500/10 text-gray-500 dark:text-gray-400 border-gray-500/20`}>
-          <i className="fa-solid fa-ban text-[9px]" />
-          Cancelled
-        </span>
-      );
+      return { text: `Cancelled · ${done} downloaded`, tone: "plain" };
     case "interrupted":
-      return (
-        <span
-          className={`${badge} bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20`}
-          title="App ditutup saat download berjalan — bisa dilanjutkan dari posisi terakhir"
-        >
-          <i className="fa-solid fa-plug-circle-xmark text-[9px]" />
-          Interrupted
-        </span>
-      );
+      return { text: `Interrupted when the app closed · ${done} saved, can resume`, tone: "warn" };
     case "error":
-      return (
-        <span className={`${badge} bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20`}>
-          <i className="fa-solid fa-triangle-exclamation text-[9px]" />
-          Failed
-        </span>
-      );
+      return { text: job.error ? `Failed · ${job.error}` : "Failed", tone: "danger" };
   }
 }
+
+const TONE_CLASS = {
+  plain: "text-ink-2",
+  ok: "text-ok-text",
+  danger: "text-danger-text",
+  warn: "text-ink-2",
+} as const;
 
 /**
  * Folds a probe result into a job: its size, whether it can be segmented, and
@@ -184,18 +169,50 @@ function applyProbe(job: Job, result: ProbeResult | null, outputDir: string, oth
   return { ...probed, outputPath, name, category: detectCategory(name) };
 }
 
+const DARK_QUERY = "(prefers-color-scheme: dark)";
+
+/** The Windows app theme, live: WebView2 reports it through prefers-color-scheme. */
+function useSystemDark(): boolean {
+  const [dark, setDark] = useState(() => window.matchMedia(DARK_QUERY).matches);
+  useEffect(() => {
+    const query = window.matchMedia(DARK_QUERY);
+    const onChange = (e: MediaQueryListEvent) => setDark(e.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return dark;
+}
+
+function isThemeMode(value: unknown): value is ThemeMode {
+  return value === "light" || value === "dark" || value === "system";
+}
+
 function App() {
-  const [dark, setDark] = useState(true);
+  const [theme, setTheme] = useState<ThemeMode>("dark");
+  const systemDark = useSystemDark();
+  const dark = theme === "system" ? systemDark : theme === "dark";
   const [jobs, setJobs] = useState<Job[]>([]);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [globalLimit, setGlobalLimit] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | JobStatus>("all");
   const [categoryFilter, setCategoryFilter] = useState<"all" | FileCategory>("all");
   const [search, setSearch] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [newDownloadOpen, setNewDownloadOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
+  /** Row whose "more actions" menu is open. */
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [view, setView] = useState<ViewMode>(readView);
+  const [mediaToolsOpen, setMediaToolsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  /** Where the sidebar's Settings menu opens: the top-left of its button. */
+  const [settingsMenu, setSettingsMenu] = useState<{ x: number; y: number } | null>(null);
+  /** The page Settings opens on; the Overview's Customize button sends it to Appearance. */
+  const [settingsPage, setSettingsPage] = useState<SettingsPage>("downloads");
+  /** Total speed, one sample per second, newest last. Feeds the speed widget. */
+  const [speedHistory, setSpeedHistory] = useState<number[]>(() => Array(SPEED_HISTORY_LEN).fill(0));
   const startingRef = useRef<Set<string>>(new Set());
   const [restored, setRestored] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -224,6 +241,49 @@ function App() {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);
 
+  // The panels only turn translucent once Windows has actually accepted the
+  // backdrop. Without it the transparent window would show the desktop sharp,
+  // behind text that was tuned for a blurred, tinted backdrop.
+  const [glassActive, setGlassActive] = useState(false);
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle("glass", glassActive);
+    root.style.setProperty("--glass", String(settings.glassOpacity));
+  }, [glassActive, settings.glassOpacity]);
+
+  // The tint sits under the panels and keeps text readable over a bright wallpaper.
+  useEffect(() => {
+    let active = true;
+    const tint: [number, number, number, number] = dark ? [12, 13, 15, 160] : [246, 247, 249, 170];
+    const apply = async () => {
+      if (!settings.glassEnabled) {
+        await appWindow.clearEffects().catch(() => {});
+        if (active) setGlassActive(false);
+        return;
+      }
+      const wanted = settings.glassEffect === "mica" ? Effect.Mica : Effect.Acrylic;
+      try {
+        await appWindow.setEffects({ effects: [wanted], color: tint });
+        if (active) setGlassActive(true);
+      } catch {
+        // Mica is Windows 11 only; fall back to acrylic before giving up.
+        try {
+          await appWindow.setEffects({ effects: [Effect.Acrylic], color: tint });
+          if (active) setGlassActive(true);
+        } catch {
+          if (active) {
+            setGlassActive(false);
+            setNotice("Glass effect is not supported on this system. Switched back to solid.");
+          }
+        }
+      }
+    };
+    void apply();
+    return () => {
+      active = false;
+    };
+  }, [settings.glassEnabled, settings.glassEffect, dark]);
+
   useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(""), 4000);
@@ -236,11 +296,18 @@ function App() {
     loadState()
       .then(async (saved) => {
         if (!active) return;
-        if (typeof saved?.dark === "boolean") setDark(saved.dark);
+        if (isThemeMode(saved?.theme)) setTheme(saved.theme);
+        else if (typeof saved?.dark === "boolean") setTheme(saved.dark ? "dark" : "light");
         if (typeof saved?.globalLimit === "string") setGlobalLimit(saved.globalLimit);
         if (saved?.jobs) setJobs(saved.jobs);
 
-        const restoredSettings = { ...DEFAULT_SETTINGS, ...saved?.settings };
+        const restoredSettings = { ...DEFAULT_SETTINGS, ...saved?.settings, settingsVersion: DEFAULT_SETTINGS.settingsVersion };
+        // Settings saved before version 2 hold the old default of one file at
+        // a time, which queues everything behind a single download. Nobody
+        // picked that on purpose before the default changed, so move it up.
+        if ((saved?.settings?.settingsVersion ?? 1) < 2 && restoredSettings.concurrency === 1) {
+          restoredSettings.concurrency = DEFAULT_SETTINGS.concurrency;
+        }
         // An empty output dir means files land in the process working
         // directory, which is wherever the app happened to be launched from —
         // effectively "lost". Fill it in on first run instead.
@@ -269,10 +336,10 @@ function App() {
     const delay = sinceLastSave > SAVE_INTERVAL_MS ? 0 : SAVE_DEBOUNCE_MS;
     const timer = window.setTimeout(() => {
       lastSaveRef.current = Date.now();
-      saveState({ dark, globalLimit, settings, jobs });
+      saveState({ dark, theme, globalLimit, settings, jobs });
     }, delay);
     return () => window.clearTimeout(timer);
-  }, [restored, dark, globalLimit, settings, jobs]);
+  }, [restored, dark, theme, globalLimit, settings, jobs]);
 
   // A restored limit lives only in the UI until the engine is told about it.
   useEffect(() => {
@@ -304,7 +371,8 @@ function App() {
           } else {
             lastTick = { time: now, downloaded };
           }
-          return { ...j, downloadedBytes: downloaded, sizeBytes: total || j.sizeBytes, speedBytes, lastTick };
+          // Bytes moving means any "reading page" or "merging" note is out of date.
+          return { ...j, downloadedBytes: downloaded, sizeBytes: total || j.sizeBytes, speedBytes, lastTick, statusText: undefined };
         }),
       );
     });
@@ -313,8 +381,59 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const unlisten = listen<{ job_id: string; text: string }>("media-status", (event) => {
+      const { job_id, text } = event.payload;
+      setJobs((prev) => prev.map((j) => (j.id === job_id ? { ...j, statusText: text } : j)));
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  const beginMediaJob = useCallback(async (job: Job) => {
+    const spec = job.media;
+    setJobs((prev) => prev.map((j) => (j.id === job.id ? { ...j, status: "downloading", error: null, lastTick: null, speedBytes: 0, statusText: "Reading video page…" } : j)));
+    try {
+      const result = await invoke<MediaResult>("media_download", {
+        jobId: job.id,
+        url: job.url,
+        choice: spec?.choice ?? "best",
+        outputDir: spec?.dir ?? "",
+        limit: job.limit || null,
+        headers: jobHeadersRef.current.get(job.id) ?? null,
+      });
+      setJobs((prev) =>
+        prev.map((j) => {
+          if (j.id !== job.id) return j;
+          if (result.status === "paused") return { ...j, status: "paused", speedBytes: 0, statusText: undefined };
+          if (result.status === "cancelled") return { ...j, status: "cancelled", speedBytes: 0, statusText: undefined };
+          // yt-dlp names the file from the video's title; the row takes that name now.
+          const name = baseName(result.path);
+          return { ...j, status: "completed", outputPath: result.path, name, category: detectCategory(name), downloadedBytes: j.sizeBytes || j.downloadedBytes, speedBytes: 0, statusText: undefined };
+        }),
+      );
+      if (result.status === "completed") {
+        notifyDownloadComplete(baseName(result.path));
+        void emit(ISLAND_FLASH_EVENT, { kind: "done", name: baseName(result.path) } satisfies IslandFlash);
+      }
+    } catch (err) {
+      const missing = String(err) === "tools-missing";
+      const message = missing ? "Video support isn't installed yet" : String(err);
+      setJobs((prev) => prev.map((j) => (j.id === job.id ? { ...j, status: "error", error: message, speedBytes: 0, statusText: undefined } : j)));
+      if (missing) setMediaToolsOpen(true);
+      else {
+        notifyDownloadFailed(job.name, message);
+        void emit(ISLAND_FLASH_EVENT, { kind: "failed", name: job.name } satisfies IslandFlash);
+      }
+    } finally {
+      startingRef.current.delete(job.id);
+    }
+  }, []);
+
   const beginJob = useCallback(
     async (job: Job) => {
+      if (job.kind === "media") return beginMediaJob(job);
       setJobs((prev) => prev.map((j) => (j.id === job.id ? { ...j, status: "downloading", error: null, lastTick: null, speedBytes: 0 } : j)));
       try {
         const result = await invoke<JobResult>("start_download", {
@@ -335,21 +454,26 @@ function App() {
             return { ...j, status: "completed", outputPath: result.path, downloadedBytes: j.sizeBytes || j.downloadedBytes, speedBytes: 0 };
           }),
         );
-        if (result.status === "completed") notifyDownloadComplete(job.name);
+        if (result.status === "completed") {
+          notifyDownloadComplete(job.name);
+          void emit(ISLAND_FLASH_EVENT, { kind: "done", name: job.name } satisfies IslandFlash);
+        }
       } catch (err) {
         setJobs((prev) => prev.map((j) => (j.id === job.id ? { ...j, status: "error", error: String(err), speedBytes: 0 } : j)));
         notifyDownloadFailed(job.name, String(err));
+        void emit(ISLAND_FLASH_EVENT, { kind: "failed", name: job.name } satisfies IslandFlash);
       } finally {
         startingRef.current.delete(job.id);
       }
     },
-    [settings.maxRetries],
+    [settings.maxRetries, beginMediaJob],
   );
 
   // Scheduler: whenever a concurrency slot is free, start the next queued job.
   // Paused jobs still hold their slot, since their connection is only parked.
   useEffect(() => {
-    const activeCount = jobs.filter((j) => ACTIVE_STATUSES.includes(j.status)).length;
+    // Jobs still being started count too, or a burst of adds could overshoot the limit.
+    const activeCount = jobs.filter((j) => ACTIVE_STATUSES.includes(j.status) || startingRef.current.has(j.id)).length;
     if (activeCount >= settings.concurrency) return;
     const next = jobs.find((j) => j.status === "queued" && !startingRef.current.has(j.id));
     if (!next) return;
@@ -461,9 +585,52 @@ function App() {
     }
   }
 
+  /**
+   * Queues a video page for yt-dlp. The name shown until it finishes is the
+   * page title plus the extension the chosen quality will produce; yt-dlp's
+   * own sanitised name replaces it on completion.
+   */
+  function createMediaJob(url: string, choice: string, label: string, title: string, headers: JobHeaders) {
+    const id = crypto.randomUUID();
+    if (Object.keys(headers).length > 0) jobHeadersRef.current.set(id, headers);
+    const ext = choice === "mp3" ? "mp3" : choice === "m4a" ? "m4a" : "mp4";
+    const clean = (title || hostOf(url)).replace(/[\\/:*?"<>|]+/g, " ").trim().slice(0, 150) || "video";
+    const name = `${clean}.${ext}`;
+    const job: Job = {
+      id,
+      url,
+      name,
+      outputPath: "",
+      sizeBytes: 0,
+      downloadedBytes: 0,
+      speedBytes: 0,
+      segments: 1,
+      limit: settings.defaultLimit,
+      status: "queued",
+      category: detectCategory(name),
+      supportsRange: null,
+      error: null,
+      createdAt: Date.now(),
+      lastTick: null,
+      nameFromUser: false,
+      kind: "media",
+      media: { choice, label: label || choice, dir: settings.defaultOutputDir },
+    };
+    setJobs((prev) => [job, ...prev]);
+  }
+
+  /** Once the tools are in, every video job that stopped for want of them goes again. */
+  function onMediaToolsInstalled() {
+    setMediaToolsOpen(false);
+    setJobs((prev) => prev.map((j) => (j.kind === "media" && j.status === "error" && j.error === "Video support isn't installed yet" ? { ...j, status: "queued", error: null } : j)));
+  }
+
   async function pauseJob(id: string) {
+    const kind = jobsRef.current.find((j) => j.id === id)?.kind;
     try {
-      await invoke("pause_download", { jobId: id });
+      // A video job is stopped outright; yt-dlp keeps its partial files and
+      // continues from them when the job is started again.
+      await invoke(kind === "media" ? "media_pause" : "pause_download", { jobId: id });
       setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: "paused", speedBytes: 0, lastTick: null } : j)));
     } catch (err) {
       setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, error: String(err) } : j)));
@@ -471,6 +638,12 @@ function App() {
   }
 
   async function resumeJob(id: string) {
+    const media = jobsRef.current.find((j) => j.id === id && j.kind === "media");
+    if (media) {
+      startingRef.current.add(id);
+      void beginMediaJob(media);
+      return;
+    }
     try {
       await invoke("resume_download", { jobId: id });
       setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: "downloading", lastTick: null } : j)));
@@ -482,6 +655,13 @@ function App() {
   async function cancelJob(id: string) {
     // The command resolves as soon as the signal lands; `start_download` then
     // settles the job as cancelled once the segments actually wind down.
+    const job = jobsRef.current.find((j) => j.id === id);
+    if (job?.kind === "media") {
+      // A paused video job has no process left to stop.
+      if (job.status === "paused") setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: "cancelled" } : j)));
+      else await invoke("media_cancel", { jobId: id }).catch(() => {});
+      return;
+    }
     await invoke("cancel_download", { jobId: id }).catch(() => {});
   }
 
@@ -494,7 +674,7 @@ function App() {
     const job = jobs.find((j) => j.id === id);
     if (!job) return;
 
-    const resumable = job.outputPath
+    const resumable = job.outputPath && job.kind !== "media"
       ? await invoke<ResumeInfo | null>("resume_info", { output: job.outputPath }).catch(() => null)
       : null;
 
@@ -537,7 +717,7 @@ function App() {
     }
     // A half-finished file is unusable on its own, so it goes with the job.
     // A completed one is the user's file and stays put.
-    if (job && job.status !== "completed" && job.outputPath) {
+    if (job && job.kind !== "media" && job.status !== "completed" && job.outputPath) {
       await invoke("discard_download", { output: job.outputPath }).catch(() => {});
     }
     setJobs((prev) => prev.filter((j) => j.id !== id));
@@ -547,7 +727,6 @@ function App() {
 
   async function applyGlobalLimit(limit: string) {
     setGlobalLimit(limit);
-    setSpeedMenuOpen(false);
     await invoke("set_global_speed_limit", { limit: limit || null }).catch(() => {});
   }
 
@@ -561,13 +740,13 @@ function App() {
    * Still flushes first, so the saved state matches what the user last saw.
    */
   async function closeWindow() {
-    if (restored) await saveState({ dark, globalLimit, settings, jobs });
+    if (restored) await saveState({ dark, theme, globalLimit, settings, jobs });
     await appWindow.close();
   }
 
   /** The real exit, reached from the tray. Nothing else will flush after this. */
   async function quitApp() {
-    if (restored) await saveState({ dark, globalLimit, settings, jobs });
+    if (restored) await saveState({ dark, theme, globalLimit, settings, jobs });
     await invoke("quit_app").catch(() => {});
   }
 
@@ -634,8 +813,8 @@ function App() {
       const skipped = urls.length - fresh.length;
       setNotice(
         skipped === 0
-          ? `${fresh.length} link ditambahkan ke queue`
-          : `${fresh.length} link ditambahkan, ${skipped} dilewati karena sudah ada di daftar`,
+          ? `${fresh.length} ${fresh.length === 1 ? "link" : "links"} added to the queue`
+          : `${fresh.length} added, ${skipped} skipped because they are already in the list`,
       );
     };
   });
@@ -684,6 +863,91 @@ function App() {
     jobsRef.current = jobs;
   });
 
+  // One speed sample per second for the widget chart. Read from the ref so the
+  // timer is set up once instead of restarting on every progress event.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const speed = jobsRef.current.filter((j) => j.status === "downloading").reduce((acc, j) => acc + j.speedBytes, 0);
+      setSpeedHistory((prev) => [...prev.slice(1), speed]);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // Feed the island window. It owns no job state of its own: it draws whatever
+  // snapshot arrives here and sends clicks back as actions.
+  useEffect(() => {
+    let wasEnabled = false;
+    const push = () => {
+      if (!settings.islandEnabled) {
+        // Tell it once that it is off, so it hides, then stay quiet.
+        if (wasEnabled) void emit(ISLAND_STATE_EVENT, { enabled: false, jobs: [], queued: 0, totalSpeed: 0 } satisfies IslandState);
+        wasEnabled = false;
+        return;
+      }
+      wasEnabled = true;
+      const all = jobsRef.current;
+      const running = all.filter((j) => j.status === "downloading" || j.status === "paused");
+      const snapshot: IslandState = {
+        enabled: true,
+        jobs: running.map((j) => ({
+          id: j.id,
+          name: j.name,
+          category: j.category,
+          status: j.status,
+          pct: progressPercent(j),
+          speed: j.status === "downloading" ? j.speedBytes : 0,
+          downloaded: j.downloadedBytes,
+          size: j.sizeBytes,
+        })),
+        queued: all.filter((j) => j.status === "queued").length,
+        totalSpeed: running.reduce((acc, j) => acc + (j.status === "downloading" ? j.speedBytes : 0), 0),
+      };
+      void emit(ISLAND_STATE_EVENT, snapshot);
+    };
+    push();
+    const timer = window.setInterval(push, ISLAND_PUSH_MS);
+    return () => window.clearInterval(timer);
+  }, [settings.islandEnabled]);
+
+  // Clicks coming back from the island. Through a ref, like the tray actions,
+  // so the listener is registered once and always calls the latest handlers.
+  const islandActionRef = useRef<(action: IslandAction) => void>(() => {});
+  useEffect(() => {
+    islandActionRef.current = (action) => {
+      switch (action.type) {
+        case "pause":
+          void pauseJob(action.id);
+          break;
+        case "resume":
+          void resumeJob(action.id);
+          break;
+        case "pauseAll":
+          pauseAllRunning();
+          break;
+        case "resumeAll":
+          jobs.filter((j) => j.status === "paused").forEach((j) => void resumeJob(j.id));
+          break;
+        case "openMain":
+          void invoke("show_main_window");
+          break;
+        case "paste":
+          void (async () => {
+            const text = (await readClipboardText()).trim();
+            await invoke("show_main_window");
+            openNewDownload(isHttpUrl(text) ? text : "");
+          })();
+          break;
+      }
+    };
+  });
+
+  useEffect(() => {
+    const unlisten = listen<IslandAction>(ISLAND_ACTION_EVENT, (event) => islandActionRef.current(event.payload));
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
   // Clipboard monitor. Opt-in, and everything read is discarded unless it's a
   // link — nothing is stored and nothing leaves the process.
   useEffect(() => {
@@ -726,7 +990,7 @@ function App() {
     setBridgeEnabled(settings.browserBridge).catch((err) => {
       if (!active || !settings.browserBridge) return;
       setSettings((prev) => ({ ...prev, browserBridge: false }));
-      setNotice(`Bridge browser gagal dijalankan: ${err}`);
+      setNotice(`Browser bridge failed to start: ${err}`);
     });
     return () => {
       active = false;
@@ -742,7 +1006,7 @@ function App() {
       if (!isHttpUrl(url)) return;
       const existing = findByUrl(jobs, url);
       if (existing) {
-        setNotice(`Link dari browser sudah ada di daftar: ${existing.name}`);
+        setNotice(`Link from the browser is already in the list: ${existing.name}`);
         return;
       }
       handleCreateJob(
@@ -763,9 +1027,30 @@ function App() {
         undefined,
         headers,
       );
-      setNotice(`Ditambahkan dari browser: ${nameFromUrl(url)}`);
+      setNotice(`Added from browser: ${nameFromUrl(url)}`);
     };
   });
+
+  const bridgeMediaRef = useRef<(p: { url: string; choice: string; label: string; title: string; headers: JobHeaders }) => void>(() => {});
+  useEffect(() => {
+    bridgeMediaRef.current = ({ url, choice, label, title, headers }) => {
+      createMediaJob(url, choice, label, title, headers ?? {});
+      setNotice(`Video added from browser: ${title || hostOf(url)}`);
+      // Asked up front rather than on the first failure, so the job can start the moment they're in.
+      void invoke<MediaToolsStatus>("media_tools_status").then((s) => {
+        if (!s.ytdlp || !s.ffmpeg) setMediaToolsOpen(true);
+      });
+    };
+  });
+
+  useEffect(() => {
+    const unlisten = listen<{ url: string; choice: string; label: string; title: string; headers: JobHeaders }>("bridge-media", (event) => {
+      bridgeMediaRef.current(event.payload);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   useEffect(() => {
     const unlisten = listen<{ url: string; headers: JobHeaders }>("bridge-download", (event) => {
@@ -875,9 +1160,9 @@ function App() {
    */
   async function bulkRemove() {
     const withPartials = selectedJobs.filter((j) => j.status !== "completed" && j.outputPath).length;
-    const warning = withPartials > 0 ? `\n\n${withPartials} di antaranya masih punya file parsial yang akan ikut dibuang.` : "";
-    const confirmed = await confirm(`Hapus ${selectedJobs.length} job dari daftar?${warning}`, {
-      title: "Hapus job terpilih",
+    const warning = withPartials > 0 ? `\n\n${withPartials} of them still have partial files that will be deleted too.` : "";
+    const confirmed = await confirm(`Remove ${selectedJobs.length} ${selectedJobs.length === 1 ? "download" : "downloads"} from the list?${warning}`, {
+      title: "Remove selected downloads",
       kind: "warning",
     });
     if (!confirmed) return;
@@ -904,454 +1189,614 @@ function App() {
     [jobs],
   );
 
-  const totalSpeed = jobs.filter((j) => j.status === "downloading").reduce((acc, j) => acc + j.speedBytes, 0);
-  const activeThreads = jobs.filter((j) => j.status === "downloading").reduce((acc, j) => acc + j.segments, 0);
   const inspectedJob = jobs.find((j) => j.id === inspectedId) ?? null;
-  const activeCount = counts.downloading + counts.paused;
-  const globalLimitLabel = SPEED_LIMIT_OPTIONS.find((o) => o.value === globalLimit)?.label ?? globalLimit;
   const allVisibleSelected = filteredJobs.length > 0 && filteredJobs.every((j) => selectedIds.has(j.id));
+  const filtersActive = statusFilter !== "all" || categoryFilter !== "all" || search.trim() !== "";
+  const pageTitle =
+    categoryFilter !== "all"
+      ? (CATEGORY_FILTERS.find((c) => c.key === categoryFilter)?.label ?? "Downloads")
+      : (STATUS_FILTERS.find((f) => f.key === statusFilter)?.label ?? "Downloads");
+  const limitOptions: { value: string; label: string }[] = [...SPEED_LIMIT_OPTIONS];
+  // A limit restored from an older session may not be one of the presets.
+  if (!limitOptions.some((o) => o.value === globalLimit)) limitOptions.push({ value: globalLimit, label: globalLimit });
+  const saveFolder = settings.defaultOutputDir ? baseName(settings.defaultOutputDir) : "";
+  const widgetsVisible = settings.showWidgets && !inspectedJob;
+
+  function resetFilters() {
+    setStatusFilter("all");
+    setCategoryFilter("all");
+    setSearch("");
+  }
+
+  async function chooseSaveFolder() {
+    const picked = await browsePath();
+    if (picked) setSettings((prev) => ({ ...prev, defaultOutputDir: picked }));
+  }
+
+  const menuJob = menu ? (jobs.find((j) => j.id === menu.id) ?? null) : null;
+
+  function openOverviewSettings() {
+    setSettingsPage("appearance");
+    setSettingsOpen(true);
+  }
+
+  function openSettings() {
+    setSettingsPage("downloads");
+    setSettingsOpen(true);
+  }
+
+  // App-wide shortcuts, listed for the user in ShortcutsDialog. Through a ref,
+  // like the tray actions, so the listener is set up once.
+  const shortcutRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  useEffect(() => {
+    shortcutRef.current = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      // An open dialog owns the keyboard; Escape closes it first.
+      if (settingsOpen || newDownloadOpen || shortcutsOpen || reportOpen || mediaToolsOpen) return;
+      const key = e.key.toLowerCase();
+      const action = { n: () => openNewDownload(), f: () => searchRef.current?.focus(), ",": openSettings, "/": () => setShortcutsOpen(true) }[key];
+      if (!action) return;
+      e.preventDefault();
+      setSettingsMenu(null);
+      action();
+    };
+  });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => shortcutRef.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  function changeView(next: ViewMode) {
+    setView(next);
+    try {
+      localStorage.setItem(VIEW_KEY, next);
+    } catch {
+      // The choice still holds for this session.
+    }
+  }
+
+  const reveal = (path: string) => void revealInFolder(path).catch(() => setNotice("File not found. It may have been moved or deleted."));
+
+  function jobState(job: Job) {
+    const canRetry = RETRYABLE_STATUSES.includes(job.status);
+    // A stopped job that got somewhere has bytes worth keeping;
+    // a finished one has no partial file left to continue from.
+    const canContinue = canRetry && job.status !== "completed" && job.downloadedBytes > 0;
+    return { pct: progressPercent(job), canRetry, canContinue };
+  }
+
+  function jobMenuItems(job: Job): MenuItem[] {
+    const { pct, canRetry, canContinue } = jobState(job);
+    const items: MenuItem[] = [{ label: "View details", icon: "info", run: () => setInspectedId(job.id) }];
+    if (job.status === "completed" && job.outputPath) items.push({ label: "Show in folder", icon: "folder", run: () => reveal(job.outputPath) });
+    items.push({ label: "Copy link", icon: "link", run: () => void copyToClipboard(job.url) });
+    if (job.status === "downloading") items.push({ label: "Pause", icon: "pause", run: () => void pauseJob(job.id) });
+    if (job.status === "paused") items.push({ label: "Resume", icon: "play", run: () => void resumeJob(job.id) });
+    if (canRetry) items.push({ label: canContinue ? `Resume from ${pct}%` : "Download again", icon: canContinue ? "play" : "retry", run: () => void retryJob(job.id) });
+    if (ACTIVE_STATUSES.includes(job.status)) items.push({ label: "Cancel", icon: "stop", run: () => void cancelJob(job.id) });
+    items.push("separator", {
+      label: "Remove",
+      icon: "trash",
+      danger: true,
+      run: () => void removeJob(job.id),
+    });
+    return items;
+  }
+
+  function openMenuAt(job: Job, e: React.MouseEvent) {
+    e.preventDefault();
+    setMenu({ id: job.id, x: e.clientX, y: e.clientY });
+  }
+
+  function moreButton(job: Job) {
+    return (
+      <button
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setMenu(menu?.id === job.id ? null : { id: job.id, x: r.right - 224, y: r.bottom + 6 });
+        }}
+        aria-haspopup="menu"
+        aria-expanded={menu?.id === job.id}
+        aria-label={`More actions for ${job.name}`}
+        className="grid h-9 w-8 shrink-0 place-items-center rounded-full text-ink-2 hover:bg-raised hover:text-ink"
+      >
+        <Icon name="more" className="text-lg" />
+      </button>
+    );
+  }
+
+  /** The one action a row puts in reach without opening the menu. */
+  function primaryAction(job: Job) {
+    const { pct, canRetry, canContinue } = jobState(job);
+    const round = "grid h-9 w-9 shrink-0 place-items-center rounded-full transition-[filter]";
+    if (job.status === "downloading")
+      return (
+        <button onClick={() => pauseJob(job.id)} className={`${round} bg-raised text-ink hover:brightness-125`} aria-label={`Pause ${job.name}`} title="Pause">
+          <Icon name="pause" className="text-base" />
+        </button>
+      );
+    if (job.status === "paused")
+      return (
+        <button onClick={() => resumeJob(job.id)} className={`${round} bg-accent text-accent-ink hover:brightness-110`} aria-label={`Resume ${job.name}`} title="Resume">
+          <Icon name="play" className="text-base" />
+        </button>
+      );
+    if (canRetry && job.status !== "completed")
+      return (
+        <button
+          onClick={() => retryJob(job.id)}
+          className={`${round} bg-raised text-ink hover:brightness-125`}
+          aria-label={canContinue ? `Resume ${job.name} from ${pct}%` : `Download ${job.name} again`}
+          title={canContinue ? `Resume from ${pct}%` : "Download again"}
+        >
+          <Icon name={canContinue ? "play" : "retry"} className="text-base" />
+        </button>
+      );
+    if (job.status === "completed" && job.outputPath)
+      return (
+        <button onClick={() => reveal(job.outputPath)} className={`${round} bg-raised text-ink hover:brightness-125`} aria-label={`Show ${job.name} in folder`} title="Show in folder">
+          <Icon name="folder" className="text-lg" />
+        </button>
+      );
+    return null;
+  }
+
+  function selectBox(job: Job) {
+    return (
+      <input
+        type="checkbox"
+        checked={selectedIds.has(job.id)}
+        // onClick, not onChange: only the mouse event carries
+        // the shift key needed for range selection.
+        onClick={(e) => toggleSelect(job.id, e.shiftKey)}
+        onChange={() => {}}
+        aria-label={`Select ${job.name}`}
+        className={`absolute -bottom-0.5 -right-0.5 h-4 w-4 cursor-pointer rounded accent-[var(--accent)] focus-visible:opacity-100 ${selectedIds.size > 0 ? "" : "opacity-0 group-hover:opacity-100"}`}
+      />
+    );
+  }
+
+  function progressBar(job: Job, pct: number) {
+    return (
+      <div className="h-1 overflow-hidden rounded-full bg-raised" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-label={`Progress of ${job.name}`}>
+        <div className={`relative h-full overflow-hidden rounded-full transition-[width] duration-300 ${job.status === "downloading" ? "bar-live" : ""}`} style={{ width: `${pct}%`, background: barColor(job.status) }} />
+      </div>
+    );
+  }
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-gray-100 dark:bg-darkbg-900 text-gray-800 dark:text-gray-100 text-sm">
-      {/* Title Bar */}
-      <div
-        data-tauri-drag-region
-        className="bg-gray-200 dark:bg-darkbg-800 text-gray-700 dark:text-gray-300 px-3 py-1.5 flex items-center justify-between border-b border-gray-300 dark:border-gray-700/60 select-none text-xs"
-      >
-        <div className="flex items-center space-x-2 pointer-events-none">
-          <div className="bg-brand-600 text-white p-1 rounded-md text-xs font-bold leading-none">
-            <i className="fa-solid fa-bolt" />
-          </div>
-          <span className="font-semibold tracking-wide text-gray-900 dark:text-gray-100">Download Engine</span>
-          <span className="text-[10px] bg-brand-500/10 text-brand-600 dark:text-brand-400 px-1.5 py-0.5 rounded border border-brand-500/20 font-mono">v0.1.0 (Rust Core)</span>
-        </div>
-        <div className="flex items-center space-x-3">
-          <button onClick={() => setDark((v) => !v)} className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white transition" title="Toggle Theme">
-            <i className={dark ? "fa-solid fa-sun text-amber-400" : "fa-solid fa-moon"} />
-          </button>
-          <div className="h-3 w-[1px] bg-gray-300 dark:bg-gray-700" />
-          <button onClick={() => appWindow.minimize()} className="hover:bg-gray-300 dark:hover:bg-gray-700 px-2 py-1 rounded transition text-gray-500 hover:text-gray-900 dark:hover:text-white">
-            <i className="fa-solid fa-minus" />
-          </button>
-          <button onClick={() => appWindow.toggleMaximize()} className="hover:bg-gray-300 dark:hover:bg-gray-700 px-2 py-1 rounded transition text-gray-500 hover:text-gray-900 dark:hover:text-white">
-            <i className="fa-regular fa-square" />
-          </button>
-          <button
-            onClick={closeWindow}
-            className="hover:bg-red-500 hover:text-white px-2 py-1 rounded transition text-gray-500"
-            title="Sembunyikan ke tray — download tetap jalan. Keluar sepenuhnya dari menu tray."
-          >
-            <i className="fa-solid fa-xmark" />
-          </button>
-        </div>
+    <div className="flex h-screen w-screen gap-2 overflow-clip bg-bg p-2 text-[13px] text-ink">
+      {/* Window controls float over the top-right corner of whichever pane is last. */}
+      <div className="fixed right-4 top-4 z-30 flex items-center gap-0.5">
+        <button onClick={() => appWindow.minimize()} className={WIN_BTN} aria-label="Minimize">
+          <Icon name="minimize" className="text-base" />
+        </button>
+        <button onClick={() => appWindow.toggleMaximize()} className={WIN_BTN} aria-label="Maximize">
+          <Icon name="maximize" className="text-[13px]" />
+        </button>
+        <button onClick={closeWindow} className={`${WIN_BTN} hover:!bg-danger hover:!text-white`} aria-label="Close (hide to tray, downloads keep running)" title="Hide to tray, downloads keep running. Quit fully from the tray menu.">
+          <Icon name="close" className="text-base" />
+        </button>
       </div>
 
-      {/* Toolbar */}
-      <div className="bg-white dark:bg-darkbg-800 border-b border-gray-200 dark:border-gray-700/80 px-4 py-2 flex flex-wrap items-center justify-between gap-2 shadow-sm">
-        <div className="flex items-center space-x-1.5">
+      {/* Sidebar */}
+      <aside className="pane flex w-64 shrink-0 flex-col p-2.5 select-none">
+        <div data-tauri-drag-region className="flex shrink-0 gap-2 pb-3">
           <button
-            onClick={() => openNewDownload()}
-            className="bg-brand-600 hover:bg-brand-700 text-white font-medium px-3.5 py-1.5 rounded-lg flex items-center space-x-2 shadow-sm transition active:scale-95"
+            onClick={() => setSettings((prev) => ({ ...prev, showWidgets: !prev.showWidgets }))}
+            aria-pressed={settings.showWidgets}
+            aria-label="Show or hide widgets"
+            title={settings.showWidgets ? "Hide widgets" : "Show widgets"}
+            className={`${TOP_PILL} ${settings.showWidgets ? "!text-ink" : ""}`}
           >
-            <i className="fa-solid fa-plus text-xs" />
-            <span>New Download</span>
+            <Icon name="widgets" className="text-lg" />
           </button>
-          <div className="h-5 w-[1px] bg-gray-200 dark:bg-gray-700 mx-1" />
-          <button
-            onClick={startAllQueued}
-            disabled={counts.queued === 0}
-            className="hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed text-emerald-600 dark:text-emerald-400 p-1.5 px-2.5 rounded-md flex items-center space-x-1.5 transition font-medium text-xs"
-          >
-            <i className="fa-solid fa-play" />
-            <span>Start All Queued</span>
+          <button onClick={() => openNewDownload()} className="press grid h-10 flex-1 place-items-center rounded-full bg-accent text-accent-ink transition-[filter] hover:brightness-110" aria-label="New download" title="New download">
+            <Icon name="plus" className="text-xl" />
           </button>
-          <button
-            onClick={pauseAllRunning}
-            disabled={counts.downloading === 0}
-            className="hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed text-amber-600 dark:text-amber-400 p-1.5 px-2.5 rounded-md flex items-center space-x-1.5 transition font-medium text-xs"
-          >
-            <i className="fa-solid fa-pause" />
-            <span>Pause All</span>
-          </button>
+        </div>
 
-          <div className="h-5 w-[1px] bg-gray-200 dark:bg-gray-700 mx-1" />
-
-          <div className="relative">
-            <button
-              onClick={() => setSpeedMenuOpen((v) => !v)}
-              className="hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 p-1.5 px-2.5 rounded-md flex items-center space-x-1.5 transition text-xs"
-            >
-              <i className="fa-solid fa-gauge-high text-brand-500" />
-              <span>Speed Limit: {globalLimit ? globalLimitLabel : "Off"}</span>
-            </button>
-            {speedMenuOpen && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setSpeedMenuOpen(false)} />
-                <div className="absolute left-0 mt-1 z-20 w-44 bg-white dark:bg-darkbg-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl py-1">
-                  <div className="px-3 py-1.5 text-[10px] text-gray-400 border-b border-gray-100 dark:border-gray-700/60">Cap across all downloads</div>
-                  {SPEED_LIMIT_OPTIONS.map((opt) => (
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+          <nav aria-label="Status">
+            <ul className="space-y-0.5">
+              {STATUS_FILTERS.filter((f) => !f.hideWhenEmpty || counts[f.key as keyof typeof counts] > 0 || statusFilter === f.key).map((f) => {
+                const active = statusFilter === f.key && categoryFilter === "all";
+                const count = counts[f.key as keyof typeof counts];
+                return (
+                  <li key={f.key}>
                     <button
-                      key={opt.value}
-                      onClick={() => applyGlobalLimit(opt.value)}
-                      className={`w-full text-left px-3 py-1.5 text-xs transition hover:bg-gray-100 dark:hover:bg-darkbg-700/60 ${
-                        globalLimit === opt.value ? "text-brand-600 dark:text-brand-400 font-medium" : "text-gray-700 dark:text-gray-300"
-                      }`}
-                    >
-                      {globalLimit === opt.value && <i className="fa-solid fa-check mr-1.5 text-[10px]" />}
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center space-x-2">
-          <div className="relative">
-            <i className="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-gray-400 text-xs" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.currentTarget.value)}
-              placeholder="Search downloads..."
-              className="bg-gray-100 dark:bg-darkbg-900 text-xs text-gray-800 dark:text-gray-200 pl-8 pr-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-1 focus:ring-brand-500 w-48 sm:w-64 transition"
-            />
-          </div>
-          <button onClick={() => setSettingsOpen(true)} className="hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 p-2 rounded-lg transition" title="Settings">
-            <i className="fa-solid fa-gear" />
-          </button>
-        </div>
-      </div>
-
-      {/* Bulk action bar — only while something is selected */}
-      {selectedIds.size > 0 && (
-        <div className="bg-brand-500/10 border-b border-brand-500/20 px-4 py-2 flex flex-wrap items-center gap-1.5 text-xs">
-          <span className="font-semibold text-brand-700 dark:text-brand-300 mr-1">{selectedIds.size} dipilih</span>
-          <div className="h-4 w-[1px] bg-brand-500/30 mx-1" />
-
-          <button
-            onClick={bulkResume}
-            disabled={bulk.resumable.length === 0}
-            className="px-2.5 py-1 rounded-md flex items-center gap-1.5 font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent transition"
-          >
-            <i className="fa-solid fa-play" /> Lanjutkan {bulk.resumable.length > 0 && `(${bulk.resumable.length})`}
-          </button>
-          <button
-            onClick={bulkPause}
-            disabled={bulk.pausable.length === 0}
-            className="px-2.5 py-1 rounded-md flex items-center gap-1.5 font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent transition"
-          >
-            <i className="fa-solid fa-pause" /> Jeda {bulk.pausable.length > 0 && `(${bulk.pausable.length})`}
-          </button>
-          <button
-            onClick={bulkCancel}
-            disabled={bulk.stoppable.length === 0}
-            className="px-2.5 py-1 rounded-md flex items-center gap-1.5 font-medium text-red-600 dark:text-red-400 hover:bg-red-500/10 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent transition"
-          >
-            <i className="fa-solid fa-stop" /> Batalkan {bulk.stoppable.length > 0 && `(${bulk.stoppable.length})`}
-          </button>
-          <button
-            onClick={bulkRetry}
-            disabled={bulk.retryable.length === 0}
-            className="px-2.5 py-1 rounded-md flex items-center gap-1.5 font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-500/10 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent transition"
-          >
-            <i className="fa-solid fa-rotate-right" /> Ulangi {bulk.retryable.length > 0 && `(${bulk.retryable.length})`}
-          </button>
-
-          <div className="h-4 w-[1px] bg-brand-500/30 mx-1" />
-
-          <button
-            onClick={bulkRemove}
-            className="px-2.5 py-1 rounded-md flex items-center gap-1.5 font-medium text-red-600 dark:text-red-400 hover:bg-red-500/10 transition"
-          >
-            <i className="fa-solid fa-trash-can" /> Hapus ({selectedIds.size})
-          </button>
-
-          <button onClick={clearSelection} className="ml-auto px-2.5 py-1 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-500/10 transition">
-            Bersihkan pilihan
-          </button>
-        </div>
-      )}
-
-      {/* Body */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <aside className="w-60 bg-gray-50 dark:bg-darkbg-800/60 border-r border-gray-200 dark:border-gray-700/80 p-3 flex flex-col justify-between select-none overflow-y-auto">
-          <div className="space-y-4">
-            <div>
-              <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-2 mb-1.5">Status</div>
-              <nav className="space-y-0.5">
-                {STATUS_FILTERS.map((f) => (
-                  <button
-                    key={f.key}
-                    onClick={() => setStatusFilter(f.key)}
-                    className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium transition ${
-                      statusFilter === f.key ? "bg-brand-500/10 text-brand-600 dark:text-brand-400" : "text-gray-600 dark:text-gray-300 hover:bg-gray-200/60 dark:hover:bg-darkbg-700/50"
-                    }`}
-                  >
-                    <span className="flex items-center space-x-2">
-                      <i className={`${f.icon} w-4`} />
-                      <span>{f.label}</span>
-                    </span>
-                    <span className="bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 rounded-full text-[10px]">{counts[f.key]}</span>
-                  </button>
-                ))}
-              </nav>
-            </div>
-
-            <div>
-              <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-2 mb-1.5">Categories</div>
-              <nav className="space-y-0.5">
-                {CATEGORY_FILTERS.map((f) => (
-                  <button
-                    key={f.key}
-                    onClick={() => setCategoryFilter(f.key)}
-                    className={`w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs transition ${
-                      categoryFilter === f.key ? "text-brand-600 dark:text-brand-400 font-medium bg-brand-500/10" : "text-gray-600 dark:text-gray-300 hover:bg-gray-200/60 dark:hover:bg-darkbg-700/50"
-                    }`}
-                  >
-                    <i className={`${f.icon} w-4`} />
-                    <span>{f.label}</span>
-                  </button>
-                ))}
-              </nav>
-            </div>
-          </div>
-
-          <div className="bg-white dark:bg-darkbg-800 p-3 rounded-xl border border-gray-200 dark:border-gray-700/70 shadow-sm space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-gray-500 dark:text-gray-400 flex items-center gap-1.5 font-medium">
-                <i className="fa-solid fa-gauge-simple-high text-brand-500" /> Speed
-              </span>
-              <span className="font-mono font-bold text-brand-600 dark:text-brand-400">{formatBytes(totalSpeed)}/s</span>
-            </div>
-            <div className="w-full bg-gray-200 dark:bg-gray-700 h-1.5 rounded-full overflow-hidden">
-              <div className="bg-brand-500 h-full transition-all duration-300" style={{ width: `${Math.min(100, (totalSpeed / (10 * 1024 * 1024)) * 100)}%` }} />
-            </div>
-            <div className="grid grid-cols-2 gap-2 pt-1 border-t border-gray-100 dark:border-gray-700/50 text-[11px]">
-              <div>
-                <div className="text-gray-400">Active Threads</div>
-                <div className="font-mono font-semibold text-gray-700 dark:text-gray-200">{activeThreads} Segments</div>
-              </div>
-              <div>
-                <div className="text-gray-400">Concurrency</div>
-                <div className="font-mono font-semibold text-gray-700 dark:text-gray-200">
-                  {activeCount} / {settings.concurrency} Active
-                </div>
-              </div>
-            </div>
-          </div>
-        </aside>
-
-        {/* Table */}
-        <main className="flex-1 flex flex-col bg-white dark:bg-darkbg-900 overflow-hidden relative">
-          <div className="flex-1 overflow-auto">
-            <table className="w-full text-left border-collapse">
-              <thead className="bg-gray-50 dark:bg-darkbg-800/80 sticky top-0 z-10 border-b border-gray-200 dark:border-gray-700/80 text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-400 font-semibold select-none">
-                <tr>
-                  <th className="py-2.5 pl-4 pr-0 w-8">
-                    <input
-                      type="checkbox"
-                      checked={allVisibleSelected}
-                      // Partial selection reads as neither on nor off.
-                      ref={(el) => {
-                        if (el) el.indeterminate = selectedIds.size > 0 && !allVisibleSelected;
+                      onClick={() => {
+                        setStatusFilter(f.key);
+                        setCategoryFilter("all");
                       }}
-                      onChange={toggleSelectAll}
-                      disabled={filteredJobs.length === 0}
-                      title="Pilih semua yang terlihat"
-                      className="accent-brand-500 w-3.5 h-3.5 cursor-pointer disabled:cursor-not-allowed"
-                    />
-                  </th>
-                  <th className="py-2.5 px-4">File Name</th>
-                  <th className="py-2.5 px-3 w-28">Size</th>
-                  <th className="py-2.5 px-3 w-32">Status</th>
-                  <th className="py-2.5 px-3 w-48">Progress</th>
-                  <th className="py-2.5 px-3 w-28 text-right">Speed</th>
-                  <th className="py-2.5 px-3 w-24 text-right">ETA</th>
-                  <th className="py-2.5 px-3 w-32 text-center">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-800/60 text-xs">
-                {filteredJobs.map((job) => {
-                  const pct = progressPercent(job);
-                  const isActive = ACTIVE_STATUSES.includes(job.status);
-                  const canRetry = ["error", "cancelled", "completed", "interrupted"].includes(job.status);
-                  // A stopped job that got somewhere has bytes worth keeping;
-                  // a finished one has no partial file left to continue from.
-                  const canContinue = canRetry && job.status !== "completed" && job.downloadedBytes > 0;
-                  return (
-                    <tr
-                      key={job.id}
-                      onClick={() => setInspectedId(job.id)}
-                      className={`hover:bg-gray-50 dark:hover:bg-darkbg-800/50 transition cursor-pointer ${inspectedId === job.id ? "bg-brand-500/5 dark:bg-brand-500/10" : ""}`}
+                      aria-current={active ? "page" : undefined}
+                      className={`${NAV_ITEM} ${active ? NAV_ACTIVE : NAV_IDLE}`}
                     >
-                      <td className="py-3 pl-4 pr-0" onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.has(job.id)}
-                          // onClick, not onChange: only the mouse event carries
-                          // the shift key needed for range selection.
-                          onClick={(e) => toggleSelect(job.id, e.shiftKey)}
-                          onChange={() => {}}
-                          className="accent-brand-500 w-3.5 h-3.5 cursor-pointer"
-                        />
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="flex items-center space-x-3">
-                          <div className="p-2 rounded-lg bg-gray-100 dark:bg-darkbg-800 text-gray-500 dark:text-gray-400">
-                            <i className={`${fileIcon(job.category)} text-base`} />
-                          </div>
-                          <div className="max-w-xs truncate">
-                            <div className="font-semibold text-gray-800 dark:text-gray-100 truncate">{job.name}</div>
-                            <div className="text-[10px] text-gray-400 truncate font-mono">{job.url}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="py-3 px-3 font-mono text-gray-600 dark:text-gray-300">{job.sizeBytes > 0 ? formatBytes(job.sizeBytes) : "-"}</td>
-                      <td className="py-3 px-3">{statusBadge(job)}</td>
-                      <td className="py-3 px-3">
-                        <div className="space-y-1.5">
-                          <div className="flex justify-between text-[10px] font-mono">
-                            <span>{pct}%</span>
-                            <span>
-                              {formatBytes(job.downloadedBytes)} / {job.sizeBytes > 0 ? formatBytes(job.sizeBytes) : "?"}
-                            </span>
-                          </div>
-                          <div className="w-full bg-gray-200 dark:bg-gray-700 h-2 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full transition-all duration-300 ${progressBarClass(job.status)} ${job.status === "downloading" ? "chunk-active" : ""}`}
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                        </div>
-                      </td>
-                      <td className="py-3 px-3 text-right font-mono font-medium text-brand-600 dark:text-brand-400">{job.status === "downloading" ? `${formatBytes(job.speedBytes)}/s` : "-"}</td>
-                      <td className="py-3 px-3 text-right font-mono text-gray-500 dark:text-gray-400 text-[11px]">{calculateEta(job)}</td>
-                      <td className="py-3 px-3 text-center" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-center space-x-1">
-                          {job.status === "downloading" && (
-                            <button onClick={() => pauseJob(job.id)} className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-amber-500" title="Pause">
-                              <i className="fa-solid fa-pause" />
-                            </button>
-                          )}
-                          {job.status === "paused" && (
-                            <button onClick={() => resumeJob(job.id)} className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-emerald-500" title="Resume">
-                              <i className="fa-solid fa-play" />
-                            </button>
-                          )}
-                          {isActive && (
-                            <button onClick={() => cancelJob(job.id)} className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-red-500" title="Cancel">
-                              <i className="fa-solid fa-stop" />
-                            </button>
-                          )}
-                          {canRetry && (
-                            <button
-                              onClick={() => retryJob(job.id)}
-                              className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-emerald-500"
-                              title={canContinue ? `Lanjutkan dari ${pct}%` : "Download ulang"}
-                            >
-                              <i className={canContinue ? "fa-solid fa-play" : "fa-solid fa-rotate-right"} />
-                            </button>
-                          )}
-                          <button onClick={() => setInspectedId(job.id)} className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-brand-500" title="Inspect">
-                            <i className="fa-solid fa-circle-info" />
-                          </button>
-                          <button
-                            onClick={() => removeJob(job.id)}
-                            className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-red-500"
-                            title={job.status === "completed" ? "Hapus dari daftar" : "Hapus dari daftar & buang file parsial"}
-                          >
-                            <i className="fa-solid fa-trash-can" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      <Icon name={f.icon} className="text-[18px]" />
+                      <span className="flex-1">{f.label}</span>
+                      {count > 0 && (
+                        <span className={`min-w-5 rounded-full px-1.5 text-center text-xs font-semibold ${f.key === "downloading" ? "bg-accent text-accent-ink" : "text-ink-3"}`}>{count}</span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
 
-          {filteredJobs.length === 0 && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-white/80 dark:bg-darkbg-900/80 backdrop-blur-sm">
-              <div className="w-16 h-16 bg-brand-500/10 text-brand-500 rounded-full flex items-center justify-center text-2xl mb-3">
-                <i className="fa-solid fa-cloud-arrow-down" />
+          <nav aria-label="File type">
+            <p className="px-3 pb-1.5 text-xs font-medium text-ink-3">File types</p>
+            <ul className="space-y-0.5">
+              {CATEGORY_FILTERS.map((f) => {
+                const active = categoryFilter === f.key;
+                return (
+                  <li key={f.key}>
+                    <button onClick={() => setCategoryFilter(active ? "all" : f.key)} aria-pressed={active} className={`${NAV_ITEM} ${active ? NAV_ACTIVE : NAV_IDLE}`}>
+                      <Icon name={categoryIcon(f.key)} className="text-[18px]" />
+                      {f.label}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
+        </div>
+
+        <div className="shrink-0 space-y-0.5 pt-2">
+          <button
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setSettingsMenu({ x: r.left, y: r.top - 6 });
+            }}
+            aria-haspopup="menu"
+            aria-expanded={settingsMenu !== null}
+            className={`${NAV_ITEM} ${settingsMenu ? NAV_ACTIVE : NAV_IDLE}`}
+          >
+            <Icon name="settings" className="text-[18px]" />
+            Settings
+          </button>
+          <button onClick={() => setTheme(dark ? "light" : "dark")} aria-pressed={dark} className={`${NAV_ITEM} ${NAV_IDLE}`}>
+            <Icon name={dark ? "sun" : "moon"} className="text-[18px]" />
+            {dark ? "Light mode" : "Dark mode"}
+          </button>
+        </div>
+
+        {/* App card, where BoardUI puts the account: status at a glance, plus the glass controls. */}
+        <div className="mt-2 shrink-0 space-y-3 rounded-2xl bg-raised p-3">
+          <div className="flex items-center gap-3">
+            <img src="/nodo-mark.png" alt="" draggable={false} className="h-9 w-9 shrink-0 object-contain" />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <div className="text-[15px] font-semibold text-ink">nodo</div>
+                <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-bold tracking-[0.08em] text-accent-text">BETA</span>
               </div>
-              <h3 className="font-semibold text-base text-gray-800 dark:text-gray-200">No downloads found</h3>
-              <p className="text-xs text-gray-500 max-w-sm mt-1">Tambahkan URL baru, tarik link ke jendela ini, atau ubah filter yang sedang aktif.</p>
-              <button onClick={() => openNewDownload()} className="mt-4 bg-brand-600 hover:bg-brand-700 text-white px-4 py-1.5 rounded-lg text-xs font-medium transition shadow">
-                <i className="fa-solid fa-plus mr-1" /> Add Download
+            </div>
+            <Switch checked={settings.glassEnabled} onChange={(v) => setSettings((prev) => ({ ...prev, glassEnabled: v }))} label="Glass mode" />
+          </div>
+          {settings.glassEnabled && (
+            <label className="flex items-center gap-2.5 text-xs text-ink-2">
+              <span className="shrink-0">Glass</span>
+              <input
+                type="range"
+                min={40}
+                max={100}
+                value={Math.round(settings.glassOpacity * 100)}
+                onChange={(e) => {
+                  const glassOpacity = Number(e.currentTarget.value) / 100;
+                  setSettings((prev) => ({ ...prev, glassOpacity }));
+                }}
+                aria-label="Glass opacity"
+                className="min-w-0 flex-1 accent-[var(--accent)]"
+              />
+              <span className="w-8 shrink-0 text-right font-mono text-[11px] text-ink-3">{Math.round(settings.glassOpacity * 100)}%</span>
+            </label>
+          )}
+        </div>
+      </aside>
+
+      {/* Downloads */}
+      <main className="pane flex min-w-0 flex-1 flex-col">
+        <header data-tauri-drag-region className={`flex shrink-0 items-center gap-3 px-4 pb-3 pt-4 ${widgetsVisible ? "pr-32 min-[1180px]:pr-4" : "pr-32"}`}>
+          <div className="pointer-events-none inline-flex h-9 min-w-0 items-center gap-2 rounded-full bg-raised pl-1.5 pr-3.5">
+            <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-accent text-accent-ink">
+              <Icon name={categoryFilter !== "all" ? categoryIcon(categoryFilter) : (STATUS_FILTERS.find((f) => f.key === statusFilter)?.icon ?? "download")} className="text-[13px]" />
+            </span>
+            <span className="truncate text-[13px] font-medium text-ink">{pageTitle}</span>
+            <span className="text-[13px] text-ink-3">{filteredJobs.length}</span>
+          </div>
+          <SearchBox inputRef={searchRef} value={search} onChange={setSearch} jobs={jobs} onOpenJob={setInspectedId} />
+
+        </header>
+
+        <div className="flex shrink-0 items-center gap-1.5 px-4 pb-2">
+          <div className="flex gap-1.5" role="tablist" aria-label="Quick filters">
+          {([["all", "All"], ["downloading", "Downloading"], ["completed", "Completed"]] as const).map(([key, label]) => {
+            const active = statusFilter === key && categoryFilter === "all";
+            const n = counts[key as keyof typeof counts];
+            return (
+              <button
+                key={key}
+                role="tab"
+                aria-selected={active}
+                onClick={() => {
+                  setStatusFilter(key);
+                  setCategoryFilter("all");
+                }}
+                className={`press inline-flex h-8 items-center gap-2 rounded-full px-3.5 text-xs font-medium transition-colors ${active ? "bg-ink text-white dark:text-neutral-950" : "bg-raised text-ink-2 hover:text-ink"}`}
+              >
+                {label}
+                {key !== "all" && n > 0 && <span className={active ? "opacity-60" : "text-ink-3"}>{n}</span>}
+              </button>
+            );
+          })}
+          </div>
+          <div className="ml-auto flex rounded-full bg-raised p-0.5" role="radiogroup" aria-label="View">
+            {([["list", "list", "List view"], ["grid", "grid", "Card view"]] as const).map(([mode, icon, label]) => (
+              <button
+                key={mode}
+                role="radio"
+                aria-checked={view === mode}
+                aria-label={label}
+                title={label}
+                onClick={() => changeView(mode)}
+                className={`press grid h-7 w-9 place-items-center rounded-full transition-colors ${view === mode ? "bg-ink text-white dark:text-neutral-950" : "text-ink-2 hover:text-ink"}`}
+              >
+                <Icon name={icon} className="text-base" />
+              </button>
+            ))}
+          </div>
+        </div>
+        {/* Bulk actions: a floating pill at the bottom, only while something is selected. */}
+        {selectedIds.size > 0 && (
+          <div className="pointer-events-none fixed inset-x-0 bottom-[72px] z-40 flex justify-center px-6">
+            <div role="toolbar" aria-label="Selected downloads" className="modal sheet-in pointer-events-auto flex items-center gap-0.5 rounded-full p-1 pl-3.5">
+              <span className="mr-1 whitespace-nowrap text-xs font-semibold tabular-nums text-ink">{selectedIds.size} selected</span>
+              <button onClick={toggleSelectAll} className={PILL_BTN}>
+                {allVisibleSelected ? "Deselect all" : "Select all"}
+              </button>
+              <span className="mx-1 h-4 w-px bg-line" aria-hidden="true" />
+              {bulk.resumable.length > 0 && (
+                <button onClick={bulkResume} className={PILL_BTN} title="Resume">
+                  <Icon name="play" className="text-sm text-ok-text" /> Resume
+                </button>
+              )}
+              {bulk.pausable.length > 0 && (
+                <button onClick={bulkPause} className={PILL_BTN} title="Pause">
+                  <Icon name="pause" className="text-sm" /> Pause
+                </button>
+              )}
+              {bulk.retryable.length > 0 && (
+                <button onClick={bulkRetry} className={PILL_BTN} title="Retry">
+                  <Icon name="retry" className="text-sm" /> Retry
+                </button>
+              )}
+              {bulk.stoppable.length > 0 && (
+                <button onClick={bulkCancel} className={PILL_BTN} title="Cancel">
+                  <Icon name="stop" className="text-sm" /> Cancel
+                </button>
+              )}
+              <button onClick={bulkRemove} className={`${PILL_BTN} text-danger-text`} title="Remove">
+                <Icon name="trash" className="text-sm" /> Remove
+              </button>
+              <button onClick={clearSelection} aria-label="Clear selection" title="Clear selection" className="ml-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-field text-ink-2 transition-colors hover:text-ink">
+                <Icon name="close" className="text-sm" />
               </button>
             </div>
-          )}
-
-          <div className="bg-gray-50 dark:bg-darkbg-800 border-t border-gray-200 dark:border-gray-700/80 px-4 py-1.5 text-xs text-gray-500 dark:text-gray-400 flex items-center justify-between select-none">
-            <div className="flex items-center space-x-4">
-              <span>
-                <i className="fa-solid fa-hard-drive mr-1" /> {jobs.length} items in queue
-              </span>
-              <span>
-                <i className="fa-solid fa-shield-halved text-emerald-500 mr-1" /> Range Request Probe: Active
-              </span>
-            </div>
-            <div className="flex items-center space-x-3 font-mono text-[11px]">
-              <span>Retries: {settings.maxRetries}</span>
-              <span>•</span>
-              <span>Disk Pre-allocation: Enabled</span>
-              <span>•</span>
-              <span>Engine Mode: Parallel Segmented</span>
-            </div>
           </div>
-        </main>
+        )}
+        <div className="flex min-h-0 flex-1">
+          <div className="flex min-w-0 flex-1 flex-col">
+            <div className="flex-1 overflow-y-auto px-4 pb-3 pt-1">
+              {!restored ? (
+                <p className="py-16 text-center text-ink-2" role="status">
+                  Loading downloads…
+                </p>
+              ) : filteredJobs.length === 0 ? (
+                <div className="mx-auto flex max-w-sm flex-col items-center py-20 text-center">
+                  <div className="grid h-14 w-14 place-items-center rounded-2xl bg-surface text-xl text-ink-2" aria-hidden="true">
+                    <Icon name="emptyTray" />
+                  </div>
+                  {jobs.length === 0 ? (
+                    <>
+                      <h2 className="mt-4 text-base font-semibold">No downloads yet</h2>
+                      <p className="mt-1 text-ink-2">Paste a URL, drag a link onto this window, or send one from the browser extension.</p>
+                      <button onClick={() => openNewDownload()} className="mt-5 h-10 rounded-xl bg-accent px-4 text-[13px] font-semibold text-accent-ink hover:brightness-110">
+                        New download
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <h2 className="mt-4 text-base font-semibold">No matches</h2>
+                      <p className="mt-1 text-ink-2">{jobs.length} {jobs.length === 1 ? "download is" : "downloads are"} hidden by the active filter or search.</p>
+                      {filtersActive && (
+                        <button onClick={resetFilters} className="mt-5 h-10 rounded-xl bg-raised px-4 text-[13px] font-semibold hover:brightness-110">
+                          Show all
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              ) : (
+                <ul className={view === "grid" ? "grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-2.5" : "space-y-2"}>
+                  {filteredJobs.map((job) => {
+                    const { pct } = jobState(job);
+                    const meta = metaLine(job);
+                    const ring = inspectedId === job.id ? "ring-1 ring-accent" : "";
+                    const shownPct = job.sizeBytes > 0 || job.status === "completed" ? `${pct}%` : "";
+                    if (view === "grid")
+                      return (
+                        <li key={job.id} onContextMenu={(e) => openMenuAt(job, e)} className={`card group relative flex flex-col rounded-[20px] p-3 select-none ${ring}`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="relative">
+                              <FileThumb name={job.name} path={job.outputPath} done={job.status === "completed"} category={job.category} size={52} />
+                              {selectBox(job)}
+                            </div>
+                            <div className="flex items-center">
+                              {primaryAction(job)}
+                              {moreButton(job)}
+                            </div>
+                          </div>
+                          <button onClick={() => setInspectedId(job.id)} className="mt-3 min-w-0 text-left" aria-label={`Details for ${job.name}`}>
+                            <div className="line-clamp-2 min-h-[2.6em] break-words text-[13px] font-semibold leading-snug">{job.name}</div>
+                            <div className="mt-0.5 truncate text-xs text-ink-3">{hostOf(job.url)}</div>
+                          </button>
+                          <div className="mt-3">
+                            {progressBar(job, pct)}
+                            <div className="mt-1.5 flex justify-between gap-2 text-[11px]">
+                              <span className={`truncate ${TONE_CLASS[meta.tone]}`}>{meta.text}</span>
+                              <span className="shrink-0 tabular-nums text-ink-3">{shownPct}</span>
+                            </div>
+                          </div>
+                        </li>
+                      );
+                    return (
+                      <li key={job.id} onContextMenu={(e) => openMenuAt(job, e)} className={`card group relative flex items-center gap-3 rounded-2xl py-2.5 pl-3 pr-2 select-none ${ring}`}>
+                        <div className="relative shrink-0">
+                          <FileThumb name={job.name} path={job.outputPath} done={job.status === "completed"} category={job.category} size={40} />
+                          {selectBox(job)}
+                        </div>
+                        <button onClick={() => setInspectedId(job.id)} className="min-w-0 flex-1 text-left" aria-label={`Details for ${job.name}`}>
+                          <div className="flex items-baseline justify-between gap-3">
+                            <span className="truncate text-[13px] font-semibold">{job.name}</span>
+                            <span className="shrink-0 text-xs tabular-nums text-ink-2">{shownPct}</span>
+                          </div>
+                          <div className="mt-1.5">{progressBar(job, pct)}</div>
+                          <div className="mt-1 truncate text-xs text-ink-3">
+                            {hostOf(job.url)} · <span className={TONE_CLASS[meta.tone]}>{meta.text}</span>
+                          </div>
+                        </button>
+                        {primaryAction(job)}
+                        {moreButton(job)}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
 
-        {inspectedJob && <InspectorDrawer job={inspectedJob} onClose={() => setInspectedId(null)} />}
-      </div>
+            <footer className="card mx-3 mb-3 flex shrink-0 items-center gap-1 rounded-full py-1 pl-3 pr-1.5 text-xs">
+              <Icon name="speed" className="text-base text-ink-3" />
+              <span className="ml-1 text-ink-3">Speed limit</span>
+              <Select
+                variant="ghost"
+                placement="top"
+                aria-label="Download speed limit"
+                className="ml-1"
+                value={globalLimit}
+                onChange={(v) => void applyGlobalLimit(v)}
+                options={limitOptions.map((o) => ({ value: o.value, label: o.value === "" ? "No limit" : o.label }))}
+              />
+              <span className="mx-2.5 h-4 w-px bg-line" aria-hidden="true" />
+              <button
+                onClick={() => void chooseSaveFolder()}
+                className="press flex min-w-0 items-center gap-1.5 rounded-full px-2 py-1 text-left transition-colors hover:bg-raised"
+                title={settings.defaultOutputDir || "Choose a save folder"}
+              >
+                <Icon name="folder" className="shrink-0 text-base text-ink-3" />
+                <span className="text-ink-3">Save to</span>
+                <span className="max-w-48 truncate text-[13px] font-medium text-ink">{saveFolder || "Choose folder…"}</span>
+              </button>
+            </footer>
+          </div>
+
+        </div>
+      </main>
+
+      {widgetsVisible && (
+        <aside className="pane hidden w-[320px] shrink-0 flex-col min-[1180px]:flex" aria-label="Overview">
+          <div data-tauri-drag-region className="flex h-[60px] shrink-0 items-center gap-2 pl-5 pr-32">
+            <h2 className="pointer-events-none text-[15px] font-semibold text-ink">Overview</h2>
+            <button
+              onClick={openOverviewSettings}
+              aria-label="Choose Overview cards"
+              title="Choose what Overview shows"
+              className="press grid h-7 w-7 place-items-center rounded-full text-ink-3 transition-colors hover:bg-raised hover:text-ink"
+            >
+              <Icon name="sliders" className="text-sm" />
+            </button>
+          </div>
+          <Widgets
+            speedHistory={speedHistory}
+            jobs={jobs}
+            outputDir={settings.defaultOutputDir}
+            concurrency={settings.concurrency}
+            onConcurrency={(value) => setSettings((prev) => ({ ...prev, concurrency: Math.max(1, Math.min(10, value)) }))}
+            onFilter={(status) => {
+              setStatusFilter(status);
+              setCategoryFilter("all");
+            }}
+            onReveal={(path) => void revealInFolder(path).catch(() => setNotice("Not found. It may have been moved or deleted."))}
+            onChooseFolder={() => void chooseSaveFolder()}
+            layout={normalizeOverview(settings.overview)}
+            onCustomize={openOverviewSettings}
+          />
+        </aside>
+      )}
+
+      {menu && menuJob && <ContextMenu x={menu.x} y={menu.y} items={jobMenuItems(menuJob)} onClose={() => setMenu(null)} />}
+
+      {settingsMenu && (
+        <ContextMenu
+          x={settingsMenu.x}
+          y={settingsMenu.y}
+          above
+          label="Settings and help"
+          onClose={() => setSettingsMenu(null)}
+          items={[
+            { label: "Keyboard shortcuts", icon: "keyboard", shortcut: "Ctrl+/", run: () => setShortcutsOpen(true) },
+            { label: "Report an issue", icon: "bug", run: () => setReportOpen(true) },
+            "separator",
+            { label: "Settings", icon: "settings", shortcut: "Ctrl+,", run: openSettings },
+          ]}
+        />
+      )}
+      {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
+      {reportOpen && <ReportIssueDialog jobs={jobs} settings={settings} onClose={() => setReportOpen(false)} />}
+
+      {inspectedJob && <InspectorDrawer job={inspectedJob} onClose={() => setInspectedId(null)} />}
 
       {/* Drop overlay. pointer-events-none keeps it from eating the drop. */}
       {dragActive && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/60 backdrop-blur-sm pointer-events-none">
-          <div className="border-2 border-dashed border-brand-400 rounded-2xl px-10 py-8 text-center bg-white/95 dark:bg-darkbg-800/95 shadow-2xl">
-            <i className="fa-solid fa-link text-3xl text-brand-500" />
-            <div className="mt-3 font-semibold text-gray-900 dark:text-gray-100">Lepaskan link untuk menambah download</div>
-            <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Beberapa link sekaligus juga bisa</div>
+        <div className="pointer-events-none fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
+          <div className="rounded-2xl border-2 border-dashed border-accent bg-surface px-10 py-8 text-center">
+            <Icon name="link" className="text-3xl text-accent-text" />
+            <div className="mt-3 font-semibold">Drop links to add downloads</div>
+            <div className="mt-1 text-xs text-ink-2">Multiple links at once work too</div>
           </div>
         </div>
       )}
 
       {(clipboardUrl || notice) && (
-        <div className="fixed bottom-6 right-6 z-[70] w-80 flex flex-col gap-2">
+        <div className="fixed bottom-6 right-6 z-[70] flex w-80 flex-col gap-2" role="status">
           {clipboardUrl && (
-            <div className="rounded-xl border border-brand-300 dark:border-brand-500/40 bg-white dark:bg-darkbg-800 shadow-2xl overflow-hidden">
-              <div className="px-4 pt-3 pb-2">
-                <div className="flex items-center gap-2 text-xs font-semibold text-gray-800 dark:text-gray-100">
-                  <i className="fa-solid fa-clipboard text-brand-500" /> Link terdeteksi di clipboard
+            <div className="modal sheet-in rounded-2xl p-3">
+              <div className="flex items-center gap-3">
+                <FileThumb name={nameFromUrl(clipboardUrl)} path="" done={false} category={detectCategory(nameFromUrl(clipboardUrl))} size={40} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] text-ink-3">Copied link</div>
+                  <div className="truncate text-[13px] font-semibold text-ink" title={clipboardUrl}>
+                    {nameFromUrl(clipboardUrl)}
+                  </div>
+                  <div className="truncate text-[11px] text-ink-3">{hostOf(clipboardUrl)}</div>
                 </div>
-                <div className="mt-1.5 text-[11px] font-mono text-gray-500 dark:text-gray-400 break-all line-clamp-3">{clipboardUrl}</div>
               </div>
-              <div className="flex justify-end gap-2 px-4 py-2 bg-gray-50 dark:bg-darkbg-900/50 border-t border-gray-100 dark:border-gray-700">
-                <button
-                  onClick={() => setClipboardUrl("")}
-                  className="px-3 py-1 rounded-lg text-[11px] font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition"
-                >
-                  Abaikan
+              <div className="mt-3 flex gap-2">
+                <button onClick={() => setClipboardUrl("")} className={`${SECONDARY_BTN} flex-1`}>
+                  Dismiss
                 </button>
-                <button
-                  onClick={() => openNewDownload(clipboardUrl)}
-                  className="px-3 py-1 rounded-lg text-[11px] font-medium text-white bg-brand-600 hover:bg-brand-700 transition shadow"
-                >
-                  Download
+                <button onClick={() => openNewDownload(clipboardUrl)} className={`${PRIMARY_BTN} flex-1`}>
+                  <Icon name="download" className="text-base" /> Download
                 </button>
               </div>
             </div>
           )}
           {notice && (
-            <div className="flex items-start gap-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-darkbg-800 px-4 py-3 shadow-2xl">
-              <i className="fa-solid fa-circle-info text-brand-500 mt-0.5" />
-              <span className="flex-1 text-xs text-gray-700 dark:text-gray-200">{notice}</span>
-              <button onClick={() => setNotice("")} className="text-gray-400 hover:text-gray-600 dark:hover:text-white">
-                <i className="fa-solid fa-xmark text-xs" />
+            <div className="flex items-start gap-2 rounded-2xl border border-line bg-raised px-4 py-3 shadow-xl">
+              <Icon name="info" className="mt-0.5 text-accent-text" />
+              <span className="flex-1 text-xs">{notice}</span>
+              <button onClick={() => setNotice("")} className="text-ink-3 hover:text-ink" aria-label="Dismiss message">
+                <Icon name="close" className="text-xs" />
               </button>
             </div>
           )}
@@ -1374,7 +1819,9 @@ function App() {
         />
       )}
 
-      {settingsOpen && <SettingsModal settings={settings} onClose={() => setSettingsOpen(false)} onSave={setSettings} onBrowse={browsePath} />}
+      {mediaToolsOpen && <MediaToolsDialog onClose={() => setMediaToolsOpen(false)} onInstalled={onMediaToolsInstalled} />}
+
+      {settingsOpen && <SettingsModal initialPage={settingsPage} onMediaTools={() => setMediaToolsOpen(true)} settings={settings} onClose={() => setSettingsOpen(false)} onSave={setSettings} onBrowse={browsePath} onGlass={(patch) => setSettings((prev) => ({ ...prev, ...patch }))} theme={theme} onTheme={setTheme} />}
     </div>
   );
 }

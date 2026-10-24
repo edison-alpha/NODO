@@ -18,12 +18,12 @@ Belum di Web Store, jadi dipasang sebagai unpacked extension.
 
 Bridge menolak permintaan tanpa token, jadi ini wajib sekali di awal:
 
-1. Di aplikasi: **Settings → Terima Link dari Extension Browser** → nyalakan.
+1. Di aplikasi: **Settings → Integrations → Accept links from the extension** → nyalakan.
 2. Copy **Token Pairing** yang muncul di bawahnya.
-3. Klik ikon extension di toolbar → **Buka Pengaturan Lengkap** (atau **Details → Extension options**).
-4. Tempel token → **Simpan Token** → **Tes Koneksi**.
+3. Klik ikon extension di toolbar. Selama belum di-pairing, popup langsung menampilkan kartu **Connect to nodo**.
+4. Tempel token → **Connect**. (Bisa juga dari **All settings** → **Save & test**.)
 
-**Tes koneksi** membedakan tiga kegagalan yang terasa sama tapi penyebabnya beda: aplikasi tidak jalan, aplikasi jalan tapi bridge-nya mati, dan aplikasi terhubung tapi token salah. Menyimpan token yang diam-diam tidak berfungsi jauh lebih membingungkan.
+Pengujian koneksi membedakan tiga kegagalan yang terasa sama tapi penyebabnya beda: aplikasi tidak jalan, aplikasi jalan tapi bridge-nya mati, dan aplikasi terhubung tapi token salah. Menyimpan token yang diam-diam tidak berfungsi jauh lebih membingungkan.
 
 Token disimpan di `chrome.storage.local`, bukan `sync`. Token ini hanya berlaku untuk aplikasi di satu komputer, jadi menyebarkannya lewat akun Google ke profil lain yang tidak punya aplikasinya hanya memperluas tempat bocornya kredensial tanpa manfaat.
 
@@ -35,7 +35,7 @@ Menu ini hanya muncul di atas link dan media, bukan di area kosong halaman — i
 
 Hasilnya muncul sebagai badge kecil di ikon extension — ✓ hijau kalau diterima, ! merah kalau tidak, dengan alasannya di tooltip. Badge dipilih daripada notifikasi sistem karena notifikasi butuh izin tersendiri untuk sesuatu sekecil ini.
 
-Klik ikon extension untuk **popup**-nya: status koneksi ke aplikasi, kolom tempel URL untuk mengirim link manual, dua toggle izin, dan jalan pintas ke pengaturan lengkap. Kolom manual itu berguna untuk URL yang kamu dapat dari tempat lain — misalnya hasil **Copy link address** di `chrome://downloads`.
+Klik ikon extension untuk **popup**-nya: status koneksi ke aplikasi, kolom tempel URL untuk mengirim link manual, switch tombol video dan dua izin opsional, dan jalan pintas **All settings**. Kolom manual itu berguna untuk URL yang kamu dapat dari tempat lain — misalnya hasil **Copy link address** di `chrome://downloads`.
 
 Job langsung masuk daftar di aplikasi dan ikut antrian seperti download yang kamu tambahkan sendiri — scheduler aplikasi yang menentukan kapan mulai, menghormati batas Concurrency.
 
@@ -46,8 +46,18 @@ Job langsung masuk daftar di aplikasi dan ikut antrian seperti download yang kam
 | `contextMenus` | menu klik-kanan itu sendiri |
 | `storage` | menyimpan token pairing |
 | `http://127.0.0.1:47283/*` | satu-satunya alamat yang dihubungi extension ini |
+| `activeTab` | popup membaca alamat tab aktif, hanya untuk tombol "Show again" di situs yang tombol videonya disembunyikan |
+| content script di `http(s)://*/*` | tombol download video melayang (lihat di bawah) |
 
-Tidak ada izin membaca halaman, tidak ada content script, tidak ada akses ke tab. Extension ini tidak pernah melihat isi halaman yang kamu buka — yang diterimanya dari menu klik-kanan hanya URL link dan URL halamannya.
+### Tombol download video melayang
+
+Seperti panel "Download this video" di IDM: tombol kaca bulat muncul di halaman YouTube (watch, Shorts, live) dan di halaman mana pun yang punya video cukup besar (≥ 200×112 px). Klik untuk memilih kualitas; geser untuk memindahkannya (posisinya diingat). × kecil saat hover menyembunyikannya di situs itu; popup extension bisa memunculkannya lagi, dan switch "Video download button" mematikannya di semua situs.
+
+Daftar kualitas datang dari aplikasi, yang menjalankan **yt-dlp** pada URL halaman — jadi yang ditawarkan adalah format yang benar-benar ada, bukan tebakan. yt-dlp dan FFmpeg dipasang aplikasi sendiri saat pertama dipakai, dari rilis GitHub resmi, dicek SHA-256-nya. Kalau video di halaman berupa file langsung (`.mp4`, `.webm`, bukan blob/stream), menu juga menawarkan **Direct file** yang diunduh engine nodo biasa.
+
+Yang perlu diketahui soal content script ini: ia berjalan di setiap halaman http(s), dan itulah yang membuat Chrome menampilkan peringatan "membaca dan mengubah data di semua situs" saat memasang. Yang dikerjakannya hanya mencari elemen `<video>` dan menggambar tombol di shadow root tertutup — tidak membaca isi halaman lain, tidak mengirim apa pun sampai kamu memilih kualitas, dan tidak pernah bicara langsung dengan aplikasi: semua request lewat service worker yang memegang token.
+
+Unduh hanya video yang memang boleh kamu simpan.
 
 ### Ambil alih download browser — opsional
 
@@ -91,9 +101,9 @@ Kalau izin belum ada, extension **tidak** diam-diam memintanya saat kamu klik me
 
 ## Log intersepsi
 
-Tab **Log Intersepsi** di halaman pengaturan mencatat setiap URL yang diserahkan ke aplikasi: waktu, URL, asalnya (klik-kanan / intersepsi / popup), ada tidaknya cookie, dan apakah aplikasi menerimanya. Tanpa ini, satu-satunya cara tahu sebuah download sampai atau tidak adalah menebak.
+Bagian **Recent activity** di halaman pengaturan mencatat setiap URL yang diserahkan ke aplikasi: waktu, URL, asalnya (klik-kanan / intersepsi / popup), ada tidaknya cookie, dan apakah aplikasi menerimanya. Tanpa ini, satu-satunya cara tahu sebuah download sampai atau tidak adalah menebak.
 
-Maksimal 50 entri terakhir, disimpan di `chrome.storage.local` — jadi ikut `local` dan bukan `sync`, karena ini daftar URL yang kamu kunjungi dan tidak ada alasan menyebarkannya ke profil lain lewat akun Google. Tombol **Bersihkan Log** menghapus semuanya.
+Maksimal 50 entri terakhir, disimpan di `chrome.storage.local` — jadi ikut `local` dan bukan `sync`, karena ini daftar URL yang kamu kunjungi dan tidak ada alasan menyebarkannya ke profil lain lewat akun Google. Tombol **Clear** menghapus semuanya.
 
 ## Yang dikirim
 

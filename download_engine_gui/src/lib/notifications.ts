@@ -15,10 +15,10 @@ async function ensureNotificationPermission(): Promise<boolean> {
 
 export async function notifyDownloadComplete(name: string) {
   if (!(await ensureNotificationPermission())) return;
-  sendNotification({ title: "Download selesai", body: name });
+  sendNotification({ title: "Download complete", body: name });
 }
 
 export async function notifyDownloadFailed(name: string, error: string) {
   if (!(await ensureNotificationPermission())) return;
-  sendNotification({ title: "Download gagal", body: `${name}\n${error}` });
+  sendNotification({ title: "Download failed", body: `${name}\n${error}` });
 }

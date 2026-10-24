@@ -84,6 +84,39 @@ struct DownloadRequest {
     headers: HashMap<String, String>,
 }
 
+/// A video page the extension wants saved through yt-dlp. Like a plain
+/// download it carries no file name; yt-dlp names the file from the video's
+/// own title, sanitised for Windows.
+#[derive(Deserialize)]
+struct MediaRequest {
+    url: String,
+    /// One of the ids `/media/formats` returned.
+    choice: String,
+    /// Shown in the list until yt-dlp reports the real file name.
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct FormatsRequest {
+    url: String,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+}
+
+#[derive(Clone, Serialize)]
+struct BridgeMedia {
+    url: String,
+    choice: String,
+    label: String,
+    title: String,
+    headers: HashMap<String, String>,
+}
+
 /// Forwarded to the UI, which owns the job list and decides what to do with it.
 #[derive(Clone, Serialize)]
 struct BridgeDownload {
@@ -153,6 +186,15 @@ fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
 }
 
 fn respond(status: StatusCode, body: &'static str, origin: Option<HeaderValue>) -> Response<Full<Bytes>> {
+    respond_bytes(status, Bytes::from_static(body.as_bytes()), origin)
+}
+
+fn respond_json<T: Serialize>(status: StatusCode, body: &T, origin: Option<HeaderValue>) -> Response<Full<Bytes>> {
+    let bytes = serde_json::to_vec(body).unwrap_or_else(|_| b"{}".to_vec());
+    respond_bytes(status, Bytes::from(bytes), origin)
+}
+
+fn respond_bytes(status: StatusCode, body: Bytes, origin: Option<HeaderValue>) -> Response<Full<Bytes>> {
     let mut res = Response::builder()
         .status(status)
         .header(CONTENT_TYPE, "application/json")
@@ -162,7 +204,7 @@ fn respond(status: StatusCode, body: &'static str, origin: Option<HeaderValue>) 
         .header(ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS")
         .header(ACCESS_CONTROL_ALLOW_HEADERS, concat!("content-type, ", "x-download-engine-token"))
         .header(ACCESS_CONTROL_MAX_AGE, "600")
-        .body(Full::new(Bytes::from_static(body.as_bytes())))
+        .body(Full::new(body))
         .expect("response built from constants is always valid");
     if let Some(origin) = origin {
         res.headers_mut().insert(ACCESS_CONTROL_ALLOW_ORIGIN, origin);
@@ -218,6 +260,59 @@ async fn route(app: AppHandle, token: String, req: Request<Incoming>) -> Result<
                 "bridge-download",
                 BridgeDownload {
                     url: payload.url,
+                    headers: payload.headers,
+                },
+            );
+            Ok(respond(StatusCode::ACCEPTED, r#"{"ok":true}"#, origin))
+        }
+
+        // What qualities a video page offers. Runs yt-dlp, so it takes a few
+        // seconds; the extension shows a spinner meanwhile.
+        (&Method::POST, "/media/formats") => {
+            let Ok(collected) = Limited::new(body, MAX_BODY_BYTES).collect().await else {
+                return Ok(respond(StatusCode::PAYLOAD_TOO_LARGE, r#"{"error":"body too large"}"#, origin));
+            };
+            let Ok(payload) = serde_json::from_slice::<FormatsRequest>(&collected.to_bytes()) else {
+                return Ok(respond(StatusCode::BAD_REQUEST, r#"{"error":"invalid json"}"#, origin));
+            };
+            match crate::media::probe(&app, &payload.url, &payload.headers).await {
+                Ok(info) => Ok(respond_json(StatusCode::OK, &info, origin)),
+                // Its own status, so the extension can say "open the app to
+                // install video support" instead of a generic failure.
+                // First video ever: start setting the tools up and tell the
+                // extension to ask again; it shows "setting up" meanwhile.
+                Err(e) if e == "tools-missing" => {
+                    crate::media::ensure_tools_in_background(&app);
+                    Ok(respond(StatusCode::CONFLICT, r#"{"error":"tools-installing"}"#, origin))
+                }
+                Err(e) => Ok(respond_json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": e }), origin)),
+            }
+        }
+
+        (&Method::POST, "/media") => {
+            let Ok(collected) = Limited::new(body, MAX_BODY_BYTES).collect().await else {
+                return Ok(respond(StatusCode::PAYLOAD_TOO_LARGE, r#"{"error":"body too large"}"#, origin));
+            };
+            let Ok(payload) = serde_json::from_slice::<MediaRequest>(&collected.to_bytes()) else {
+                return Ok(respond(StatusCode::BAD_REQUEST, r#"{"error":"invalid json"}"#, origin));
+            };
+            let allowed = reqwest::Url::parse(&payload.url)
+                .map(|u| matches!(u.scheme(), "http" | "https"))
+                .unwrap_or(false);
+            // Only ids this app hands out; anything else would reach yt-dlp's
+            // format selector as text from outside.
+            let known = matches!(payload.choice.as_str(), "best" | "m4a" | "mp3")
+                || payload.choice.strip_prefix('v').is_some_and(|h| !h.is_empty() && h.len() <= 4 && h.bytes().all(|b| b.is_ascii_digit()));
+            if !allowed || !known {
+                return Ok(respond(StatusCode::BAD_REQUEST, r#"{"error":"invalid media request"}"#, origin));
+            }
+            let _ = app.emit(
+                "bridge-media",
+                BridgeMedia {
+                    url: payload.url,
+                    choice: payload.choice,
+                    label: payload.label.chars().take(80).collect(),
+                    title: payload.title.chars().take(300).collect(),
                     headers: payload.headers,
                 },
             );
@@ -280,7 +375,7 @@ pub async fn set_bridge_enabled(app: AppHandle, state: State<'_, BridgeState>, e
     // error on the toggle, instead of a listener that silently never came up.
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, BRIDGE_PORT)))
         .await
-        .map_err(|e| format!("port {BRIDGE_PORT} tidak bisa dipakai: {e}"))?;
+        .map_err(|e| format!("port {BRIDGE_PORT} is unavailable: {e}"))?;
 
     let handle = tauri::async_runtime::spawn(serve(app.clone(), token, listener));
     {

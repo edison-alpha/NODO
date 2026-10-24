@@ -1,5 +1,13 @@
 import { useState } from "react";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import type { NewJobInput } from "../types";
+import { baseName, detectCategory, nameFromUrl } from "../lib/format";
+import { hostOf } from "../lib/ui";
+import Icon from "./Icon";
+import FileThumb from "./FileThumb";
+import { FIELD, GHOST_BTN, HINT, LABEL, PRIMARY_BTN, SECONDARY_BTN } from "./controls";
+import { Sheet, SheetHeader } from "./Sheet";
+import Select from "./Select";
 
 interface Props {
   defaultSegments: number;
@@ -16,25 +24,25 @@ interface Props {
 }
 
 const LIMIT_OPTIONS = [
-  { value: "", label: "Unlimited Speed" },
+  { value: "", label: "Unlimited" },
   { value: "500KB", label: "500 KB/s" },
   { value: "2MB", label: "2 MB/s" },
   { value: "10MB", label: "10 MB/s" },
 ];
 
-export default function NewDownloadModal({
-  defaultSegments,
-  defaultLimit,
-  defaultOutputDir,
-  initialUrl = "",
-  duplicateOf,
-  onClose,
-  onSubmit,
-  onBrowse,
-}: Props) {
+function isHttpUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export default function NewDownloadModal({ defaultSegments, defaultLimit, defaultOutputDir, initialUrl = "", duplicateOf, onClose, onSubmit, onBrowse }: Props) {
   const [url, setUrl] = useState(initialUrl);
   // Pre-filled rather than left to the placeholder, so the folder the file is
-  // actually going to is visible and editable without opening Browse first.
+  // actually going to is visible without opening Browse first.
   const [outputPath, setOutputPath] = useState(defaultOutputDir);
   // Left blank on purpose: blank is what lets the server's own
   // `Content-Disposition` name win once the probe comes back, which is the
@@ -43,167 +51,152 @@ export default function NewDownloadModal({
   const [segments, setSegments] = useState(defaultSegments);
   const [limit, setLimit] = useState(defaultLimit);
   const [startInSec, setStartInSec] = useState(0);
+  const [showOptions, setShowOptions] = useState(false);
 
+  const trimmed = url.trim();
+  const valid = isHttpUrl(trimmed);
   // Only a warning, never a block: re-downloading a link whose file changed on
   // the server is a legitimate thing to want.
-  const duplicate = url.trim() ? duplicateOf(url) : undefined;
+  const duplicate = trimmed ? duplicateOf(trimmed) : undefined;
+  const previewName = fileName.trim() || (valid ? nameFromUrl(trimmed) : "");
 
   async function handleBrowse() {
     const picked = await onBrowse();
     if (picked) setOutputPath(picked);
   }
 
+  async function pasteLink() {
+    try {
+      const text = (await readText())?.trim() ?? "";
+      if (text) setUrl(text);
+    } catch {
+      // Empty or non-text clipboard: nothing to paste.
+    }
+  }
+
   function submit(forceStart: boolean) {
-    if (!url.trim()) return;
-    onSubmit({ url: url.trim(), outputPath: outputPath.trim(), fileName: fileName.trim(), segments, limit, startInSec, forceStart });
+    if (!valid) return;
+    onSubmit({ url: trimmed, outputPath: outputPath.trim(), fileName: fileName.trim(), segments, limit, startInSec, forceStart });
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-white dark:bg-darkbg-800 w-full max-w-lg rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between bg-gray-50 dark:bg-darkbg-900/50">
-          <div className="flex items-center space-x-2">
-            <div className="p-1.5 bg-brand-500/10 text-brand-500 rounded-lg">
-              <i className="fa-solid fa-circle-plus text-base" />
-            </div>
-            <h3 className="font-bold text-gray-800 dark:text-gray-100 text-base">Add New Download Task</h3>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-white">
-            <i className="fa-solid fa-xmark text-lg" />
-          </button>
-        </div>
+    <Sheet onClose={onClose} label="Add download" className="w-[500px] flex-col">
+      <SheetHeader title="Add download" onClose={onClose} />
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            submit(true);
-          }}
-          className="p-5 space-y-4"
-        >
-          <div>
-            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Download URL <span className="text-red-500">*</span>
-            </label>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit(true);
+        }}
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-7 pb-5">
+          <div className="relative">
+            <Icon name="link" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-lg text-ink-3" />
             <input
               type="url"
               required
               autoFocus
+              aria-label="Download link"
               value={url}
               onChange={(e) => setUrl(e.currentTarget.value)}
-              placeholder="https://example.com/large-file.zip"
-              className="w-full bg-gray-50 dark:bg-darkbg-900 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-100"
+              placeholder="Paste a link to download"
+              className={`${FIELD} h-12 rounded-xl pl-11 pr-24 text-sm`}
             />
-            {duplicate && (
-              <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 px-3 py-2">
-                <i className="fa-solid fa-triangle-exclamation text-amber-500 mt-0.5" />
-                <div className="text-[11px] leading-relaxed text-amber-800 dark:text-amber-200">
-                  Link ini sudah ada di daftar: <span className="font-semibold">{duplicate.name}</span> ({duplicate.status}). Kalau diteruskan, file
-                  akan disimpan terpisah, bukan menimpa yang lama.
-                </div>
-              </div>
+            {!trimmed && (
+              <button type="button" onClick={() => void pasteLink()} className={`${SECONDARY_BTN} absolute right-1.5 top-1/2 h-9 -translate-y-1/2`}>
+                <Icon name="clipboard" className="text-base" /> Paste
+              </button>
             )}
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Save To Folder (-o)</label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={outputPath}
-                onChange={(e) => setOutputPath(e.currentTarget.value)}
-                placeholder={defaultOutputDir || "Default: current working directory"}
-                className="flex-1 bg-gray-50 dark:bg-darkbg-900 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-100"
-              />
-              <button
-                type="button"
-                onClick={handleBrowse}
-                className="bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 px-3 py-2 rounded-lg text-xs font-medium transition text-gray-700 dark:text-gray-200 flex items-center gap-1"
-              >
-                <i className="fa-regular fa-folder-open" /> Browse
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Nama File (opsional)</label>
-            <input
-              type="text"
-              value={fileName}
-              onChange={(e) => setFileName(e.currentTarget.value)}
-              placeholder="Kosongkan untuk memakai nama dari server"
-              className="w-full bg-gray-50 dark:bg-darkbg-900 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-100"
-            />
-            <div className="mt-1 text-[10px] text-gray-400">
-              Dibiarkan kosong: nama diambil dari URL dulu, lalu diganti nama yang diberikan server (header{" "}
-              <span className="font-mono">Content-Disposition</span>) kalau ada. Diisi: nama ini yang dipakai.
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="flex justify-between items-center mb-1">
-                <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Connections (-n)</label>
-                <span className="text-xs font-mono font-bold text-brand-500">{segments}</span>
-              </div>
-              <input
-                type="range"
-                min={1}
-                max={32}
-                value={segments}
-                onChange={(e) => setSegments(Number(e.currentTarget.value))}
-                className="w-full accent-brand-500 bg-gray-200 dark:bg-gray-700 h-1.5 rounded-lg appearance-none cursor-pointer"
-              />
-              <div className="flex justify-between text-[10px] text-gray-400 mt-1">
-                <span>1 (Single)</span>
-                <span>32 (Max)</span>
+          {valid && (
+            <div className="flex items-center gap-3 rounded-2xl bg-sheet-2 p-3">
+              <FileThumb name={previewName} path="" done={false} category={detectCategory(previewName)} size={44} />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[13px] font-semibold text-ink">{previewName || "Unnamed file"}</div>
+                <div className="truncate text-xs text-ink-3">{hostOf(trimmed)}</div>
               </div>
             </div>
-
-            <div>
-              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Bandwidth Limit (-r)</label>
-              <select
-                value={limit}
-                onChange={(e) => setLimit(e.currentTarget.value)}
-                className="w-full bg-gray-50 dark:bg-darkbg-900 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-100"
-              >
-                {LIMIT_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
+          )}
+          {trimmed && !valid && <p className="px-1 text-xs text-danger-text">That doesn't look like an http(s) link.</p>}
+          {duplicate && (
+            <div className="flex items-start gap-2 rounded-xl bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] px-3 py-2.5 text-xs leading-relaxed text-ink-2">
+              <Icon name="warning" className="mt-0.5 text-base text-warn" />
+              <span>
+                Already in your list as <span className="font-semibold text-ink">{duplicate.name}</span>. Downloading again saves a separate copy.
+              </span>
             </div>
+          )}
+
+          <div className="flex items-center gap-3 rounded-2xl bg-sheet-2 py-2.5 pl-3.5 pr-2">
+            <Icon name="folder" className="text-lg text-ink-2" />
+            <div className="min-w-0 flex-1">
+              <div className="text-[11px] text-ink-3">Save to</div>
+              <div className="truncate text-[13px] font-medium text-ink" title={outputPath}>
+                {outputPath ? baseName(outputPath) : "App folder"}
+              </div>
+            </div>
+            <button type="button" onClick={() => void handleBrowse()} className={GHOST_BTN}>
+              Change
+            </button>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Start Delay (--start-in sec)</label>
-            <input
-              type="number"
-              min={0}
-              value={startInSec}
-              onChange={(e) => setStartInSec(Number(e.currentTarget.value) || 0)}
-              placeholder="0 (Immediate)"
-              className="w-full bg-gray-50 dark:bg-darkbg-900 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-500 dark:text-gray-100"
-            />
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowOptions((v) => !v)}
+            aria-expanded={showOptions}
+            className="flex w-full items-center gap-1.5 px-1 pt-1 text-xs font-medium text-ink-2 hover:text-ink"
+          >
+            <Icon name="chevronUp" className={`text-sm transition-transform ${showOptions ? "" : "rotate-180"}`} />
+            More options
+          </button>
 
-          <div className="flex items-center justify-end space-x-3 pt-3 border-t border-gray-200 dark:border-gray-700">
-            <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition">
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => submit(false)}
-              className="px-4 py-2 rounded-lg text-xs font-medium text-gray-700 dark:text-gray-200 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 transition"
-            >
-              Add to Queue
-            </button>
-            <button type="submit" className="px-4 py-2 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition shadow">
-              Download Now
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+          {showOptions && (
+            <div className="space-y-4 rounded-2xl bg-sheet-2 p-4">
+              <div>
+                <label htmlFor="nd-name" className={LABEL}>
+                  File name
+                </label>
+                <input id="nd-name" type="text" value={fileName} onChange={(e) => setFileName(e.currentTarget.value)} placeholder="Use the name from the server" className={`${FIELD} bg-sheet`} />
+                <span className={HINT}>Leave empty to use the name the server sends.</span>
+              </div>
+              <div>
+                <div className="mb-1.5 flex items-center justify-between">
+                  <label htmlFor="nd-seg" className="text-[13px] font-medium text-ink">
+                    Connections
+                  </label>
+                  <span className="font-mono text-xs font-semibold text-accent-text">{segments}</span>
+                </div>
+                <input id="nd-seg" type="range" min={1} max={32} value={segments} onChange={(e) => setSegments(Number(e.currentTarget.value))} className="w-full cursor-pointer accent-[var(--accent)]" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="nd-limit" className={LABEL}>
+                    Speed limit
+                  </label>
+                  <Select id="nd-limit" value={limit} onChange={setLimit} options={LIMIT_OPTIONS} />
+                </div>
+                <div>
+                  <label htmlFor="nd-delay" className={LABEL}>
+                    Start after (sec)
+                  </label>
+                  <input id="nd-delay" type="number" min={0} value={startInSec} onChange={(e) => setStartInSec(Number(e.currentTarget.value) || 0)} className={`${FIELD} bg-sheet font-mono`} />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-7 py-4">
+          <button type="button" onClick={() => submit(false)} disabled={!valid} className={SECONDARY_BTN}>
+            Add to queue
+          </button>
+          <button type="submit" disabled={!valid} className={PRIMARY_BTN}>
+            <Icon name="download" className="text-base" /> Download
+          </button>
+        </div>
+      </form>
+    </Sheet>
   );
 }

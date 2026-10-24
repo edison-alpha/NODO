@@ -1,12 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, Job } from "../types";
+import type { AppSettings, Job, ThemeMode } from "../types";
 
 /** Bumped whenever the saved shape changes in a way old files can't satisfy. */
 const VERSION = 1;
 
 export interface PersistedState {
   version: number;
+  /** What the theme resolved to; files saved before `theme` existed only have this. */
   dark: boolean;
+  theme?: ThemeMode;
   globalLimit: string;
   settings: AppSettings;
   jobs: Job[];

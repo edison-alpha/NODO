@@ -1,61 +1,72 @@
 <!doctype html>
-<html lang="id">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <link rel="stylesheet" href="ui.css" />
   </head>
   <body class="popup">
-    <svg hidden xmlns="http://www.w3.org/2000/svg">
-      <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" /></symbol>
-      <symbol id="i-download" viewBox="0 0 24 24"><path d="M11 3h2v8h4l-5 6-5-6h4V3Zm-7 16h16v2H4v-2Z" /></symbol>
-      <symbol id="i-gear" viewBox="0 0 24 24"><path d="m12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9.4 4a7.6 7.6 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2-1.2L16.5 3h-4l-.4 2.6c-.7.3-1.4.7-2 1.2l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1c.6.5 1.3.9 2 1.2l.4 2.6h4l.4-2.6c.7-.3 1.4-.7 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2Z" /></symbol>
-      <symbol id="i-check" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-1.2 14.5-4.3-4.3 1.5-1.4 2.8 2.8 5.7-5.7 1.4 1.4-7.1 7.2Z" /></symbol>
-      <symbol id="i-x" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm3.5 12.1-1.4 1.4L12 13.4l-2.1 2.1-1.4-1.4 2.1-2.1-2.1-2.1 1.4-1.4 2.1 2.1 2.1-2.1 1.4 1.4-2.1 2.1 2.1 2.1Z" /></symbol>
-    </svg>
-
-    <div class="popup-head">
-      <span class="mark"><svg class="icon"><use href="#i-bolt" /></svg></span>
-      <span>Download Engine</span>
-    </div>
-
-    <div class="popup-body">
-      <div class="status-badge" id="connBadge" style="justify-content: space-between">
-        <span style="display: flex; align-items: center; gap: 8px"><span class="dot"></span><span id="connText">Memeriksa…</span></span>
-        <span class="mono" style="font-size: 10px; opacity: 0.7">47283</span>
+    <header class="popup-head">
+      <div class="brand">
+        <img src="icons/128.png" alt="" width="28" height="28" />
+        <b>nodo</b>
       </div>
+      <span class="conn" id="conn">Checking…</span>
+    </header>
 
-      <div>
-        <label class="field" for="url">Kirim Link Manual</label>
-        <div class="field-row" style="margin-bottom: 8px">
-          <input id="url" type="url" placeholder="https://…" spellcheck="false" />
+    <main class="popup-main">
+      <!-- Shown until the extension is paired, so the first run needs no other page. -->
+      <section class="card pad" id="pairCard" hidden>
+        <b>Connect to nodo</b>
+        <ol class="steps">
+          <li>In nodo, open <b>Settings → Integrations</b></li>
+          <li>Turn on <b>Accept links from the extension</b></li>
+          <li>Copy the pairing token and paste it here</li>
+        </ol>
+        <div class="field">
+          <input class="input mono" id="token" type="password" placeholder="Pairing token" autocomplete="off" spellcheck="false" />
+          <button class="btn primary" id="connect">Connect</button>
         </div>
-        <button class="btn btn-primary btn-block" id="send"><svg class="icon"><use href="#i-download" /></svg> Unduh dengan Engine</button>
-      </div>
+        <p class="msg" id="pairMsg"></p>
+      </section>
 
-      <div id="status"></div>
+      <section class="card pad" id="sendCard">
+        <div class="field">
+          <input class="input" id="url" type="url" placeholder="Paste a link to download" spellcheck="false" />
+          <button class="btn primary square" id="send" aria-label="Download" title="Download">
+            <svg class="icon fa-solid fa-cloud-download-alt" viewBox="0 0 640 512" aria-hidden="true"><path d="M537.6 226.6C552.4 215.4 560 197.4 560 176c0-35.3-28.7-64-64-64-2.7 0-5.4.2-8 .5C469.4 50.4 409.2 0 336 0c-82.8 0-150.4 66.8-152 149.3C176.5 145.8 168.3 144 160 144c-53 0-96 43-96 96 0 4.8.4 9.5 1 14.1C27.7 266.3 0 303.3 0 347.3 0 410.8 51.5 462.3 115 462.3h159v-96h-64c-14.1 0-23.1-16.3-15.8-28.4l96-160c7.7-12.8 26.9-12.8 34.6 0l96 160c7.3 12.1-1.7 28.4-15.8 28.4h-64v96h196c71.7 0 129-58.1 129-129.8 0-56.8-36.4-105.1-87.2-122zM336 512c-17.7 0-32-14.3-32-32v-48h64v48c0 17.7-14.3 32-32 32z"/></svg>
+          </button>
+        </div>
+        <p class="msg" id="sendMsg"></p>
+      </section>
 
-      <div class="toggle-rows">
-        <div class="row">
-          <span>Ambil Alih Download</span>
-          <label class="switch">
-            <input type="checkbox" id="intercept" aria-label="Ambil alih download browser" />
-            <span class="slider"></span>
+      <section class="card">
+        <div class="rows">
+          <label class="row">
+            <span class="text"><b>Video download button</b><span>On pages with a video</span></span>
+            <input type="checkbox" class="switch" id="fab" />
+          </label>
+          <div class="row" id="siteRow" hidden>
+            <span class="text"><b id="siteText">Hidden on this site</b><span>You hid the button here</span></span>
+            <button class="link" id="siteShow">Show again</button>
+          </div>
+          <label class="row">
+            <span class="text"><b>Take over browser downloads</b><span>Send what Chrome downloads to nodo</span></span>
+            <input type="checkbox" class="switch" id="intercept" />
+          </label>
+          <label class="row">
+            <span class="text"><b>Include site cookies</b><span>For downloads that need a login</span></span>
+            <input type="checkbox" class="switch" id="cookies" />
           </label>
         </div>
-        <div class="row">
-          <span>Sertakan Cookie</span>
-          <label class="switch">
-            <input type="checkbox" id="cookies" aria-label="Sertakan cookie situs" />
-            <span class="slider"></span>
-          </label>
-        </div>
-      </div>
+      </section>
 
-      <div class="popup-foot">
-        <button class="btn-link" id="openOptions"><svg class="icon"><use href="#i-gear" /></svg> Buka Pengaturan Lengkap</button>
-      </div>
-    </div>
+      <footer class="popup-foot">
+        <button class="link" id="openOptions">All settings</button>
+        <span id="version"></span>
+      </footer>
+    </main>
 
+    <script src="common.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

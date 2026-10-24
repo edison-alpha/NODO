@@ -1,5 +1,5 @@
 /**
- * Sends links to the Download Engine app over its loopback bridge, either from
+ * Sends links to the nodo app over its loopback bridge, either from
  * the right-click menu or by taking over a download the browser just started.
  * See download_engine_gui/README.md for what guards that endpoint.
  */
@@ -16,7 +16,7 @@ const MENU_ID = "send-to-download-engine";
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: MENU_ID,
-    title: "Download with Download Engine",
+    title: "Download with nodo",
     contexts: ["link", "video", "audio", "image"],
   });
 });
@@ -77,7 +77,7 @@ async function onDownloadCreated(item) {
   }
 
   if (!response.ok) {
-    flash("!", "#dc2626", `Ditolak aplikasi (HTTP ${response.status}) — tetap diunduh browser`);
+    flash("!", "#dc2626", `Rejected by nodo (HTTP ${response.status}) — the browser kept the download`);
     await record({ url, source: "intercept", cookie: Boolean(cookie), status: "rejected" });
     return;
   }
@@ -95,7 +95,7 @@ async function onDownloadCreated(item) {
     // the only cost is a duplicate the browser had time to write.
   }
 
-  flash("✓", "#16a34a", "Diambil alih Download Engine");
+  flash("✓", "#16a34a", "Download handed to nodo");
 }
 
 /**
@@ -182,7 +182,7 @@ async function cookieHeader(url) {
 async function send(url, pageUrl, source = "menu") {
   const { token } = await chrome.storage.local.get("token");
   if (!token) {
-    flash("!", "#dc2626", "Token belum diisi — buka opsi extension");
+    flash("!", "#dc2626", "Not paired yet — open the extension settings");
     chrome.runtime.openOptionsPage();
     return { ok: false };
   }
@@ -202,17 +202,17 @@ async function send(url, pageUrl, source = "menu") {
   } catch {
     // A refused connection is the common case and has a specific cause worth
     // naming, rather than a generic "failed".
-    flash("!", "#dc2626", "Aplikasi tidak merespons — jalankan Download Engine dan nyalakan bridge di Settings");
+    flash("!", "#dc2626", "nodo isn't answering — open the app and turn on links from the extension");
     await record({ url, source, cookie: Boolean(headers.cookie), status: "unreachable" });
     return { ok: false };
   }
 
   if (response.ok) {
-    flash("✓", "#16a34a", "Dikirim ke Download Engine");
+    flash("✓", "#16a34a", "Sent to nodo");
   } else if (response.status === 401) {
-    flash("!", "#dc2626", "Token ditolak — cocokkan ulang lewat opsi extension");
+    flash("!", "#dc2626", "Token rejected — pair again in the extension settings");
   } else {
-    flash("!", "#dc2626", `Ditolak aplikasi (HTTP ${response.status})`);
+    flash("!", "#dc2626", `Rejected by nodo (HTTP ${response.status})`);
   }
 
   await record({ url, source, cookie: Boolean(headers.cookie), status: response.ok ? "sent" : "rejected" });
@@ -223,11 +223,79 @@ async function send(url, pageUrl, source = "menu") {
  * Lets the popup reuse `send` instead of posting to the bridge itself, so the
  * header allowlist, cookie lookup and logging have exactly one implementation.
  */
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "send-url") return false;
-  send(message.url, undefined, "popup").then(sendResponse);
-  return true; // keeps the channel open for the async reply
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // The floating button's page, for the Referer; only trusted from our own content script.
+  const pageUrl = sender.tab?.url;
+  switch (message?.type) {
+    case "send-url":
+      send(message.url, undefined, "popup").then(sendResponse);
+      return true; // keeps the channel open for the async reply
+    case "direct-download":
+      send(message.url, pageUrl, "button").then(sendResponse);
+      return true;
+    case "media-formats":
+      mediaFormats(message.url).then(sendResponse);
+      return true;
+    case "media-download":
+      sendMedia(message, pageUrl).then(sendResponse);
+      return true;
+    case "open-options":
+      chrome.runtime.openOptionsPage();
+      return false;
+    default:
+      return false;
+  }
 });
+
+/**
+ * Asks the app what qualities a video page offers. The app runs yt-dlp for
+ * this, so it can take a few seconds; the button shows a spinner meanwhile.
+ *
+ * Answers with a `reason` the button can turn into the right sentence, rather
+ * than one generic failure: not paired, app not running, video support not
+ * installed yet, or yt-dlp's own explanation.
+ */
+async function mediaFormats(url) {
+  const { token } = await chrome.storage.local.get("token");
+  if (!token) return { ok: false, reason: "token" };
+  const headers = await buildHeaders(url, url);
+  let response;
+  try {
+    response = await fetch(`${BRIDGE_ORIGIN}/media/formats`, {
+      method: "POST",
+      headers: { "content-type": "application/json", [TOKEN_HEADER]: token },
+      body: JSON.stringify({ url, headers }),
+    });
+  } catch {
+    return { ok: false, reason: "unreachable" };
+  }
+  if (response.status === 401) return { ok: false, reason: "token" };
+  if (response.status === 409) return { ok: false, reason: "tools-missing" };
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, reason: "error", message: body.error || `HTTP ${response.status}` };
+  return { ok: true, info: body };
+}
+
+async function sendMedia({ url, choice, label, title }, pageUrl) {
+  const { token } = await chrome.storage.local.get("token");
+  if (!token) return { ok: false, reason: "token" };
+  const headers = await buildHeaders(url, pageUrl || url);
+  let response;
+  try {
+    response = await fetch(`${BRIDGE_ORIGIN}/media`, {
+      method: "POST",
+      headers: { "content-type": "application/json", [TOKEN_HEADER]: token },
+      body: JSON.stringify({ url, choice, label, title, headers }),
+    });
+  } catch {
+    await record({ url, source: "button", cookie: Boolean(headers.cookie), status: "unreachable" });
+    return { ok: false, reason: "unreachable" };
+  }
+  await record({ url, source: "button", cookie: Boolean(headers.cookie), status: response.ok ? "sent" : "rejected" });
+  if (response.ok) flash("✓", "#16a34a", "Video sent to nodo");
+  if (response.status === 401) return { ok: false, reason: "token" };
+  return { ok: response.ok, status: response.status };
+}
 
 /** How many hand-overs the log keeps. */
 const LOG_LIMIT = 50;
@@ -237,7 +305,7 @@ const LOG_LIMIT = 50;
  * rather than the user having to guess whether a download reached the app.
  *
  * Capped and kept in `local`: these are URLs the user visited, so they stay on
- * this machine and never ride `sync` to another profile. "Bersihkan Log" on the
+ * this machine and never ride `sync` to another profile. "Clear" on the
  * options page erases the lot.
  */
 async function record(entry) {
@@ -253,11 +321,11 @@ async function record(entry) {
 function flash(text, color, title) {
   chrome.action.setBadgeText({ text });
   chrome.action.setBadgeBackgroundColor({ color });
-  chrome.action.setTitle({ title: `Download Engine — ${title}` });
+  chrome.action.setTitle({ title: `nodo — ${title}` });
   // Cleared on a timer the worker may not live to see; that's fine, since the
   // badge is advisory and the next click overwrites it anyway.
   setTimeout(() => {
     chrome.action.setBadgeText({ text: "" });
-    chrome.action.setTitle({ title: "Download Engine" });
+    chrome.action.setTitle({ title: "nodo" });
   }, 4000);
 }

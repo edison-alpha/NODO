@@ -18,14 +18,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # but the manifest that redirects `comctl32.dll` to v6 is embedded only into
 # *binary* targets, so a test harness here dies with
 # STATUS_ENTRYPOINT_NOT_FOUND before it runs a single test. Testable logic goes
-# in a crate that doesn't link Tauri — see `bridge_guard`.
+# in a crate that doesn't link Tauri â€” see `bridge_guard`.
 test = false
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
@@ -36,13 +36,26 @@ download_engine = { path = "../../download_engine" }
 reqwest = { version = "0.13", features = ["stream"] }
 tauri-plugin-single-instance = "2.5.4"
 tauri-plugin-clipboard-manager = "2.5.0"
+# Free/total bytes of the drive a folder sits on, for the storage widget.
+fs2 = "0.4"
 # The browser bridge listens on loopback. hyper is already in the tree as
 # reqwest's client, so serving with it costs a feature flag rather than a whole
-# new HTTP stack — and keeps request parsing out of hand-written code.
+# new HTTP stack â€” and keeps request parsing out of hand-written code.
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
-tokio = { version = "1", features = ["net"] }
+tokio = { version = "1", features = ["net", "process", "io-util"] }
+# Video downloads: checking the yt-dlp and ffmpeg releases before installing them,
+# and unpacking the ffmpeg build archive.
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # The bridge's authorisation checks. Separate so they can be unit-tested
-# without linking Tauri — see that crate's docs for why that matters on Windows.
+# without linking Tauri â€” see that crate's docs for why that matters on Windows.
 bridge_guard = { path = "../bridge_guard" }
+
+# Clips the island window to its animated shape so the transparent area around
+# it does not swallow clicks meant for whatever is underneath. Same version
+# tauri already pulls in.
+[target.'cfg(windows)'.dependencies]
+# The island's clip region, and Explorer's file icons for the download list.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

@@ -1,112 +1,85 @@
-const BRIDGE_ORIGIN = "http://127.0.0.1:47283";
-const TOKEN_HEADER = "x-download-engine-token";
+/* The toolbar popup: connection at a glance, pairing on first run, a paste box, and the switches. */
 
-const $ = (id) => document.getElementById(id);
-
-function setStatus(message, kind = "") {
-  $("status").textContent = message;
-  $("status").className = kind;
+async function refresh() {
+  const result = await connection();
+  showConnection($("conn"), result);
+  // Pairing problems are fixed right here; anything else just needs the app open.
+  const needsPairing = result.kind === "no-token" || result.kind === "bad-token";
+  $("pairCard").hidden = !needsPairing;
+  $("sendCard").hidden = needsPairing;
+  if (result.kind === "unreachable") setMsg($("sendMsg"), "bad", "nodo isn't running. Open the app to send links.");
+  else if ($("sendMsg").classList.contains("bad")) setMsg($("sendMsg"), "", "");
+  if (result.kind === "bad-token") setMsg($("pairMsg"), "bad", "That token was rejected. Copy it again from nodo.");
 }
 
-/* ---------- theme ---------- */
-
-// Shares the options page's stored choice so the two never look like different
-// extensions.
-chrome.storage.local.get("theme").then(({ theme }) => {
-  document.documentElement.classList.toggle("dark", (theme ?? "dark") === "dark");
-});
-
-/* ---------- connection ---------- */
-
-async function refreshConnection() {
-  const { token } = await chrome.storage.local.get("token");
-  const badge = $("connBadge");
-  const text = $("connText");
-
+$("connect").addEventListener("click", async () => {
+  const token = $("token").value.trim();
   if (!token) {
-    badge.className = "status-badge";
-    text.textContent = "Token belum diisi";
+    setMsg($("pairMsg"), "bad", "Paste the pairing token first.");
     return;
   }
-
-  try {
-    const response = await fetch(`${BRIDGE_ORIGIN}/ping`, { headers: { [TOKEN_HEADER]: token } });
-    if (response.ok) {
-      badge.className = "status-badge is-ok";
-      text.textContent = "Desktop App Online";
-    } else {
-      badge.className = "status-badge is-bad";
-      text.textContent = response.status === 401 ? "Token ditolak" : `HTTP ${response.status}`;
-    }
-  } catch {
-    badge.className = "status-badge is-bad";
-    text.textContent = "Aplikasi tidak merespons";
-  }
-}
-
-/* ---------- manual send ---------- */
+  setMsg($("pairMsg"), "", "Connecting…");
+  await chrome.storage.local.set({ token });
+  const [kind, text] = connectionAdvice(await connection());
+  setMsg($("pairMsg"), kind, text);
+  await refresh();
+});
+$("token").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("connect").click();
+});
 
 $("send").addEventListener("click", async () => {
   const url = $("url").value.trim();
-  if (!url) {
-    setStatus("Tempel URL dulu.", "bad");
-    return;
-  }
-  // Checked here so a typo fails with an explanation instead of becoming a job
-  // in the app that can never resolve.
   if (!/^https?:\/\//i.test(url)) {
-    setStatus("Hanya URL http(s) yang bisa diunduh engine.", "bad");
+    setMsg($("sendMsg"), "bad", url ? "Only http(s) links can be downloaded." : "Paste a link first.");
     return;
   }
-
-  setStatus("Mengirim…");
-  // Routed through the service worker rather than posted from here, so the one
-  // copy of the send logic — header allowlist, cookie lookup, logging — covers
-  // every entry point.
+  setMsg($("sendMsg"), "", "Sending…");
+  // Through the service worker, which owns the one copy of the send logic.
   const result = await chrome.runtime.sendMessage({ type: "send-url", url });
-
   if (result?.ok) {
-    setStatus("Masuk antrian Download Engine.", "ok");
+    setMsg($("sendMsg"), "ok", "Added to nodo.");
     $("url").value = "";
   } else if (result?.status === 401) {
-    setStatus("Token ditolak — cocokkan ulang di Pengaturan.", "bad");
+    setMsg($("sendMsg"), "bad", "nodo rejected the token. Pair again.");
+    await refresh();
   } else if (result?.status) {
-    setStatus(`Ditolak aplikasi (HTTP ${result.status}).`, "bad");
+    setMsg($("sendMsg"), "bad", `nodo answered with HTTP ${result.status}.`);
   } else {
-    setStatus("Aplikasi tidak merespons. Jalankan Download Engine dan nyalakan bridge.", "bad");
+    setMsg($("sendMsg"), "bad", "nodo isn't running. Open the app to send links.");
   }
 });
-
-$("url").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") $("send").click();
+$("url").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("send").click();
 });
 
-/* ---------- permissions ---------- */
-
-// Same rule as the options page: the switches show the permission Chrome holds,
-// not a stored preference.
-async function refreshToggles() {
-  $("cookies").checked = await chrome.permissions.contains({ permissions: ["cookies"], origins: ["<all_urls>"] });
-  $("intercept").checked = await chrome.permissions.contains({ permissions: ["downloads"] });
+/** "Show again" for a site where the floating button was hidden with its ×. */
+async function refreshSite() {
+  const { fabHiddenSites = [] } = await chrome.storage.local.get("fabHiddenSites");
+  // Readable because opening the popup grants activeTab.
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  let site = "";
+  try {
+    site = tab?.url ? new URL(tab.url).hostname : "";
+  } catch {
+    site = "";
+  }
+  const hidden = Boolean(site) && fabHiddenSites.includes(site);
+  $("siteRow").hidden = !hidden;
+  if (!hidden) return;
+  $("siteText").textContent = `Hidden on ${site}`;
+  $("siteShow").onclick = async () => {
+    await chrome.storage.local.set({ fabHiddenSites: fabHiddenSites.filter((s) => s !== site) });
+    await refreshSite();
+  };
 }
-
-function bindPermissionToggle(checkbox, request) {
-  checkbox.addEventListener("change", async () => {
-    try {
-      if (checkbox.checked) await chrome.permissions.request(request);
-      else await chrome.permissions.remove(request);
-    } catch (e) {
-      setStatus(`Chrome menolak: ${e.message}`, "bad");
-    } finally {
-      await refreshToggles();
-    }
-  });
-}
-
-bindPermissionToggle($("cookies"), { permissions: ["cookies"], origins: ["<all_urls>"] });
-bindPermissionToggle($("intercept"), { permissions: ["downloads"] });
 
 $("openOptions").addEventListener("click", () => chrome.runtime.openOptionsPage());
+$("version").textContent = `v${chrome.runtime.getManifest().version}`;
 
-void refreshConnection();
-void refreshToggles();
+const permissionError = (text) => setMsg($("sendMsg"), "bad", text);
+void bindFab($("fab"));
+void bindPermission($("intercept"), PERMS.intercept, permissionError);
+void bindPermission($("cookies"), PERMS.cookies, permissionError);
+void refreshSite();
+void refresh();

@@ -1,209 +1,92 @@
 <!doctype html>
-<html lang="id">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Download Engine — Opsi</title>
+    <title>nodo — Extension settings</title>
     <link rel="stylesheet" href="ui.css" />
   </head>
-  <body>
-    <!--
-      Icons are an inline sprite rather than a FontAwesome stylesheet from a CDN:
-      an extension's settings page must still render with no network, and MV3
-      blocks remote scripts outright.
-    -->
-    <svg hidden xmlns="http://www.w3.org/2000/svg">
-      <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" /></symbol>
-      <symbol id="i-key" viewBox="0 0 24 24"><path d="M14 2a8 8 0 0 0-7.7 10.2L2 16.5V22h5.5l1.2-1.2V18h2.3l1.4-1.4v-2.3h2.3l1-1A8 8 0 1 0 14 2Zm3.5 6a1.8 1.8 0 1 1 0-3.5 1.8 1.8 0 0 1 0 3.5Z" /></symbol>
-      <symbol id="i-cookie" viewBox="0 0 24 24"><path d="M21.9 11.3a4 4 0 0 1-4.7-5.1A4 4 0 0 1 12.6 2 10 10 0 1 0 22 11.4ZM8.5 9a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm-.5 7a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm6.5 1.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm.5-6.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Z" /></symbol>
-      <symbol id="i-magnet" viewBox="0 0 24 24"><path d="M3 4h5v8a4 4 0 0 0 8 0V4h5v8a9 9 0 0 1-18 0V4Zm0 10h5v-4H3v4Zm13-4v4h5v-4h-5Z" /></symbol>
-      <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M3 6h9V4h2v6h-2V8H3V6Zm18 0h-5V4h-2v6h2V8h5V6ZM3 16h5v-2h2v6H8v-2H3v-2Zm18 0h-9v-2h-2v6h2v-2h9v-2Z" /></symbol>
-      <symbol id="i-history" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 8.5 12h-2.2A6.9 6.9 0 1 1 12 5.1c1.9 0 3.6.8 4.8 2L13 7v2h7V2l-2.6 2.6A9 9 0 0 0 12 3Zm-1 4v6l5 3 .9-1.5-4-2.3V7h-2Z" /></symbol>
-      <symbol id="i-info" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 15h-2v-6h2v6Zm0-8h-2V7h2v2Z" /></symbol>
-      <symbol id="i-check" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-1.2 14.5-4.3-4.3 1.5-1.4 2.8 2.8 5.7-5.7 1.4 1.4-7.1 7.2Z" /></symbol>
-      <symbol id="i-x" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm3.5 12.1-1.4 1.4L12 13.4l-2.1 2.1-1.4-1.4 2.1-2.1-2.1-2.1 1.4-1.4 2.1 2.1 2.1-2.1 1.4 1.4-2.1 2.1 2.1 2.1Z" /></symbol>
-      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-1 14H9V8h2v8Zm4 0h-2V8h2v8Z" /></symbol>
-      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.2 3.8 10 9 12 5.2-2 9-6.8 9-12V5l-9-4Zm-1 15-4-4 1.4-1.4L11 13.2l4.6-4.6L17 10l-6 6Z" /></symbol>
-      <symbol id="i-eye" viewBox="0 0 24 24"><path d="M12 5C6.5 5 2.2 9 1 12c1.2 3 5.5 7 11 7s9.8-4 11-7c-1.2-3-5.5-7-11-7Zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9Zm0-2a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" /></symbol>
-      <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M2.1 3.5 3.5 2.1l18.4 18.4-1.4 1.4-3.3-3.3A11.8 11.8 0 0 1 12 19c-5.5 0-9.8-4-11-7a13 13 0 0 1 4.3-5.2L2.1 3.5ZM12 5c5.5 0 9.8 4 11 7a13 13 0 0 1-3.6 4.7l-3-3A4.5 4.5 0 0 0 10.3 7.6l-2.4-2.4A11.8 11.8 0 0 1 12 5Z" /></symbol>
-      <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5V3Zm3 2v5h7V5H8Zm-1 9v5h10v-5H7Z" /></symbol>
-      <symbol id="i-plug" viewBox="0 0 24 24"><path d="M4 3h4v4H4V3Zm12 0h4v4h-4V3ZM4 17h4v4H4v-4Zm12 0h4v4h-4v-4ZM11 5h2v6h5v2h-5v6h-2v-6H6v-2h5V5Z" /></symbol>
-      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12.5 2A10 10 0 1 0 22 14.3 8 8 0 0 1 12.5 2Z" /></symbol>
-      <symbol id="i-sun" viewBox="0 0 24 24"><path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm0-6h-1v4h2V1h-1Zm0 18h-1v4h2v-4h-1ZM1 11v2h4v-2H1Zm18 0v2h4v-2h-4ZM4.2 2.8 2.8 4.2l2.8 2.8 1.4-1.4-2.8-2.8Zm12.8 14.2-1.4 1.4 2.8 2.8 1.4-1.4-2.8-2.8Zm2.8-14.2L17 5.6 18.4 7l2.8-2.8-1.4-1.4ZM5.6 17 2.8 19.8l1.4 1.4L7 18.4 5.6 17Z" /></symbol>
-    </svg>
-
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="brandmark">
-          <div class="logo"><svg class="icon"><use href="#i-bolt" /></svg></div>
+  <body class="page">
+    <div class="page-wrap">
+      <header class="page-head">
+        <div class="brand">
+          <img src="icons/128.png" alt="" width="40" height="40" />
           <div>
-            <div class="title-row">
-              <h1>Download Engine</h1>
-              <span class="pill" id="versionPill">Chrome Extension</span>
-            </div>
-            <p class="sub">Bridge Konfigurasi &amp; Intersepsi Browser</p>
+            <b>nodo</b>
+            <small id="version">Browser extension</small>
           </div>
         </div>
+        <span class="conn" id="conn">Checking…</span>
+      </header>
 
-        <div class="topbar-actions">
-          <div class="status-badge" id="connBadge">
-            <span class="dot"></span>
-            <span id="connText">Memeriksa bridge…</span>
+      <section>
+        <p class="section-label">Connection</p>
+        <div class="card pad">
+          <p class="hint">In nodo, open <b>Settings → Integrations</b>, turn on <b>Accept links from the extension</b>, and copy the pairing token.</p>
+          <div class="field" style="margin-top: 12px">
+            <input class="input mono" id="token" type="password" placeholder="Pairing token" autocomplete="off" spellcheck="false" />
+            <button class="btn square" id="reveal" aria-label="Show token" title="Show token">
+              <svg class="icon" viewBox="0 0 24 24" style="font-size: 16px"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></svg>
+            </button>
+            <button class="btn primary" id="save">Save &amp; test</button>
           </div>
-          <div class="divider-v"></div>
-          <button class="btn-ghost" id="themeToggle" title="Ganti tema" aria-label="Ganti tema">
-            <svg class="icon" style="font-size: 16px"><use href="#i-moon" id="themeIcon" /></svg>
-          </button>
+          <p class="msg" id="tokenMsg"></p>
         </div>
-      </div>
-    </header>
+      </section>
 
-    <div class="shell">
-      <aside class="sidebar">
-        <button class="tab-btn" id="nav-settings" role="tab" aria-selected="true" aria-controls="tab-settings">
-          <svg class="icon" style="font-size: 14px"><use href="#i-sliders" /></svg>
-          <span>Pengaturan Bridge</span>
-        </button>
-        <button class="tab-btn" id="nav-logs" role="tab" aria-selected="false" aria-controls="tab-logs">
-          <svg class="icon" style="font-size: 14px"><use href="#i-history" /></svg>
-          <span>Log Intersepsi</span>
-        </button>
-
-        <div class="info-box">
-          <h2><svg class="icon"><use href="#i-info" /></svg> Informasi Bridge</h2>
-          <p>Extension mengirim link ke aplikasi desktop di <code>127.0.0.1:47283</code>. Aplikasi Download Engine harus jalan dan bridge-nya dinyalakan di Settings.</p>
+      <section>
+        <p class="section-label">Features</p>
+        <div class="card">
+          <div class="rows">
+            <label class="row">
+              <span class="text">
+                <b>Video download button</b>
+                <span>A floating button on pages with a video, YouTube included. Drag it anywhere; its × hides it on that site.</span>
+              </span>
+              <input type="checkbox" class="switch" id="fab" />
+            </label>
+            <div class="row">
+              <span class="text">
+                <b>Take over browser downloads</b>
+                <span>Downloads Chrome starts on its own go to nodo instead.</span>
+                <details class="more">
+                  <summary>How it works</summary>
+                  <p>Right-click only sees a link's address, which on many sites isn't the file. With this on, nodo gets the final address once Chrome has followed every redirect.</p>
+                  <p>The link is handed over first and the browser's copy cancelled only after nodo accepts it — if nodo is closed, Chrome simply finishes the download. Chrome shows this permission as access to all your downloads.</p>
+                </details>
+              </span>
+              <input type="checkbox" class="switch" id="intercept" aria-label="Take over browser downloads" />
+            </div>
+            <div class="row">
+              <span class="text">
+                <b>Include site cookies</b>
+                <span>Makes downloads that need a login work instead of failing with 403.</span>
+                <details class="more">
+                  <summary>What this allows</summary>
+                  <p>Chrome lets an extension with this permission read all your cookies. nodo only reads them for the site of a link you send, at the moment you send it, and only to the app on this computer, which keeps them in memory and never writes them to disk.</p>
+                </details>
+              </span>
+              <input type="checkbox" class="switch" id="cookies" aria-label="Include site cookies" />
+            </div>
+          </div>
         </div>
-      </aside>
+      </section>
 
-      <main class="content">
-        <!-- ---------- Pengaturan ---------- -->
-        <section id="tab-settings" role="tabpanel" style="display: flex; flex-direction: column; gap: 24px">
-          <div class="card">
-            <div class="card-head ruled">
-              <div class="head-left">
-                <div class="card-icon brand"><svg class="icon"><use href="#i-key" /></svg></div>
-                <div>
-                  <h3>Token Pairing Desktop App</h3>
-                  <p>Otentikasi antara extension dan Download Engine di komputer ini</p>
-                </div>
-              </div>
-              <span class="tag" id="authTag">Belum diuji</span>
-            </div>
+      <section id="sitesSection" hidden>
+        <p class="section-label">Video button hidden on</p>
+        <div class="card"><ul class="site-list" id="sites"></ul></div>
+      </section>
 
-            <div>
-              <label class="field" for="token">Kunci Otentikasi (Token)</label>
-              <div class="field-row">
-                <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Copy dari Settings aplikasi" />
-                <button class="btn-icon" id="reveal" title="Tampilkan token" aria-label="Tampilkan token">
-                  <svg class="icon" style="font-size: 14px"><use href="#i-eye" id="revealIcon" /></svg>
-                </button>
-              </div>
-            </div>
-
-            <div class="btn-row">
-              <button class="btn btn-primary" id="save"><svg class="icon"><use href="#i-save" /></svg> Simpan Token</button>
-              <button class="btn" id="test"><svg class="icon"><use href="#i-plug" /></svg> Tes Koneksi</button>
-            </div>
-            <div id="status"></div>
-          </div>
-
-          <div class="card">
-            <div class="card-head">
-              <div class="head-left">
-                <div class="card-icon amber"><svg class="icon"><use href="#i-cookie" /></svg></div>
-                <div>
-                  <h3>Sertakan Cookie Situs</h3>
-                  <p>Diperlukan untuk link yang hanya bisa diunduh setelah login (mencegah HTTP 403)</p>
-                </div>
-              </div>
-              <label class="switch">
-                <input type="checkbox" id="cookies" aria-label="Sertakan cookie situs" />
-                <span class="slider"></span>
-              </label>
-            </div>
-
-            <div class="note">
-              <p>
-                Mengaktifkannya memberi extension izin membaca <em>semua</em> cookie-mu, termasuk yang <code>HttpOnly</code> — yang normalnya tidak bisa dibaca JavaScript halaman mana pun. Itu kenaikan
-                akses yang nyata, jadi sengaja tidak dijadikan izin wajib.
-              </p>
-              <p class="fine">Cookie hanya dibaca saat sebuah link dikirim, hanya untuk situs link itu, dan hanya dikirim ke aplikasi di komputer ini. Di sisi aplikasi, cookie tidak ditulis ke disk.</p>
-            </div>
-
-            <div class="state-line">
-              <span class="label">Status Izin:</span>
-              <span class="value" id="cookieState"></span>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-head">
-              <div class="head-left">
-                <div class="card-icon blue"><svg class="icon"><use href="#i-magnet" /></svg></div>
-                <div>
-                  <h3>Ambil Alih Download Browser</h3>
-                  <p>Teruskan unduhan yang dimulai browser ke Download Engine</p>
-                </div>
-              </div>
-              <label class="switch">
-                <input type="checkbox" id="intercept" aria-label="Ambil alih download browser" />
-                <span class="slider"></span>
-              </label>
-            </div>
-
-            <div class="note">
-              <p>
-                Menu klik-kanan hanya melihat <code>href</code> sebuah link, dan di banyak situs itu bukan yang benar-benar diunduh. Tombol unduh yang men-submit form dan halaman perantara menghasilkan
-                URL lain — URL finalnya baru diketahui setelah browser menelusuri semua pengalihan.
-              </p>
-              <p class="fine">Izin <code>downloads</code> memperlihatkan seluruh unduhanmu ke extension ini. Biarkan mati kalau menu klik-kanan sudah cukup.</p>
-              <div class="callout">
-                <svg class="icon" style="font-size: 13px; margin-top: 2px"><use href="#i-shield" /></svg>
-                <span>Kirim dulu, batalkan belakangan: kalau aplikasi sedang tutup, bridge mati, atau token salah, download tidak dibatalkan — browser tetap menyelesaikannya.</span>
-              </div>
-            </div>
-
-            <div class="state-line">
-              <span class="label">Status Intersepsi:</span>
-              <span class="value" id="interceptState"></span>
-            </div>
-          </div>
-        </section>
-
-        <!-- ---------- Log ---------- -->
-        <section id="tab-logs" role="tabpanel" hidden>
-          <div class="card">
-            <div class="card-head ruled">
-              <div>
-                <h3>Riwayat Serah-Terima URL</h3>
-                <p>Tercatat di komputer ini saja, maksimal 50 entri terakhir</p>
-              </div>
-              <button class="btn-link danger" id="clearLogs">Bersihkan Log</button>
-            </div>
-
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Waktu</th>
-                    <th>URL File</th>
-                    <th>Asal</th>
-                    <th>Cookie</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody id="logBody"></tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-      </main>
+      <section>
+        <div class="card-head" style="padding: 0 12px">
+          <p class="section-label" style="margin: 0; padding: 0">Recent activity</p>
+          <button class="link danger" id="clearLog">Clear</button>
+        </div>
+        <div class="card"><ul class="log-list" id="log"></ul></div>
+        <p class="hint" style="padding: 6px 12px 0">The last 50 links handed to nodo. Kept on this computer only.</p>
+      </section>
     </div>
 
-    <div class="toast" id="toast" hidden>
-      <svg class="icon"><use href="#i-check" id="toastIcon" /></svg>
-      <span id="toastMsg"></span>
-    </div>
-
+    <script src="common.js"></script>
     <script src="options.js"></script>
   </body>
 </html>
