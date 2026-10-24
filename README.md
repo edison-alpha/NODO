@@ -1,4 +1,13 @@
-# Download Engine
+# NODO- Download Engine
+
+
+<img width="1917" height="1143" alt="image" src="https://github.com/user-attachments/assets/ccc870e1-af75-4124-8ce0-6821fe2882a8" />
+
+
+<img width="1917" height="1051" alt="image" src="https://github.com/user-attachments/assets/ce41427d-2fe5-42f2-a80c-d3a7b3c1bfff" />
+
+<img width="1908" height="1042" alt="image" src="https://github.com/user-attachments/assets/a85356ca-3ef1-4aca-9531-edc8ab07dd1e" />
+
 
 Download manager bergaya IDM: engine download tersegmentasi di Rust, plus aplikasi desktop Tauri + React di atasnya.
 
